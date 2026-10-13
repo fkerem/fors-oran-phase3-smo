@@ -1,4 +1,4 @@
-
+#!/bin/sh
 ##
 ## Setup extra space.  We prefer the LVM route, using all available PVs
 ## to create a big VG.  If that's not available, we fall back to
@@ -30,7 +30,7 @@ fi
 VGNAME="emulab"
 ARCH=`uname -m`
 
-maybe_install_packages lvm2 maybe_install_packages thin-provisioning-tools
+maybe_install_packages lvm2 thin-provisioning-tools
 
 #
 # First try to make LVM volumes; fall back to mkextrafs.pl /storage.  We

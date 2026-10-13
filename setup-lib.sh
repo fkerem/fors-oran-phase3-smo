@@ -188,48 +188,44 @@ do_apt_update() {
     fi
 }
 
-are_packages_installed() {
+are_packages_installed() (
+    # Legacy contract: 1 means all installed, 0 means at least one missing.
+    # Call this predicate in a conditional; isolate state from its callers.
     retval=1
-    while [ ! -z "$1" ] ; do
-	dpkg -s "$1" >/dev/null 2>&1
-	if [ ! $? -eq 0 ] ; then
-	    retval=0
-	fi
-	shift
+    while [ "$#" -gt 0 ]; do
+        if ! dpkg -s "$1" >/dev/null 2>&1; then
+            retval=0
+        fi
+        shift
     done
-    return $retval
-}
+    return "$retval"
+)
 
-maybe_install_packages() {
-    if [ ! ${DO_APT_UPGRADE} -eq 0 ] ; then
-        # Just do an install/upgrade to make sure the package(s) are installed
-	# and upgraded; we want to try to upgrade the package.
-	$APTGETINSTALL $@
-	return $?
-    else
-	# Ok, check if the package is installed; if it is, don't install.
-	# Otherwise, install (and maybe upgrade, due to dependency side effects).
-	# Also, optimize so that we try to install or not install all the
-	# packages at once if none are installed.
-	are_packages_installed $@
-	if [ $? -eq 1 ]; then
-	    return 0
-	fi
-
-	retval=0
-	while [ ! -z "$1" ] ; do
-	    are_packages_installed $1
-	    if [ $? -eq 0 ]; then
-		$APTGETINSTALL $1
-		retval=`expr $retval \| $?`
-	    else
-		retval=0
-	    fi
-	    shift
-	done
-	return $retval
+maybe_install_packages() (
+    if [ "$#" -eq 0 ]; then
+        return 0
     fi
-}
+    if [ "${DO_APT_UPGRADE:-0}" -ne 0 ]; then
+        # APTGETINSTALL is the existing command/options string, not an array.
+        if $APTGETINSTALL "$@"; then
+            return 0
+        else
+            return "$?"
+        fi
+    fi
+    while [ "$#" -gt 0 ]; do
+        # A successful legacy predicate means this package is missing.
+        if are_packages_installed "$1"; then
+            if $APTGETINSTALL "$1"; then
+                :
+            else
+                return "$?"
+            fi
+        fi
+        shift
+    done
+    return 0
+)
 
 ##
 ## Figure out the system python version.

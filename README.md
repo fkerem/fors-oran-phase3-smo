@@ -67,6 +67,13 @@ Upstream credential-loading shell tracing is disabled; the completion step
 reports health and writes provenance instead of emailing an admin token.
 Keep all generated credentials and setup logs private.
 
+The package helpers preserve their upstream inverted predicate contract
+while handling it safely under strict shell failure checks. Installed
+packages no longer abort preflight; genuine installer failures retain their
+exit code. The disk bootstrap also requests only the intended LVM packages.
+Regression tests execute the actual helper definitions with mocked package
+commands, without sourcing bootstrap side effects or touching real disks.
+
 ## Inspect the deployment
 
 On node-0:
@@ -123,7 +130,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python -m unittest discover -s tests -v
 for script in setup-*.sh bin/*.sh; do bash -n "$script" || exit; done
-shellcheck -x -S error setup-driver.sh setup-oran-smo.sh setup-phase3-preflight.sh setup-end.sh bin/phase3-status.sh
+shellcheck -x -S error setup-lib.sh setup-disk-space.sh setup-driver.sh setup-oran-smo.sh setup-phase3-preflight.sh setup-end.sh bin/phase3-status.sh
 ```
 
 See `NOTICE.md` for upstream attribution and retained license notices.
