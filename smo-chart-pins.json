@@ -1,0 +1,26 @@
+{
+  "upstream_profile_commit": "e26d613e6ff69becd058b46bd55644ce18f06ca4",
+  "reviewed": "2026-10-13",
+  "onap_plugin_commit": "18b40bb392e323f1204fc6a7782dbc298790fae7",
+  "releases": {
+    "g-release": {
+      "index_url": "https://gitlab.flux.utah.edu/api/v4/projects/1869/packages/helm/powder-osc-smo-g-release/index.yaml",
+      "dep_commit": "d1457ddedb21c4f46e20016c56e4c4cd9e8666c2",
+      "charts": {
+        "onap": {"version": "10.0.0", "url": "https://gitlab.flux.utah.edu/api/v4/projects/1869/packages/helm/powder-osc-smo-g-release/charts/onap-10.0.0.tgz", "sha256": "11424ade8304691bdfefbff4620d785ba21d8b5d6218928f07e65908239b536f"},
+        "nonrtric": {"version": "1.0.0", "url": "https://gitlab.flux.utah.edu/api/v4/projects/1869/packages/helm/powder-osc-smo-g-release/charts/nonrtric-1.0.0.tgz", "sha256": "615fc289bf9b770c9323734976113cd903e3ed2ff6dc8d376fb9b6024691df49"},
+        "ru-du-simulators": {"version": "1.0.0", "url": "https://gitlab.flux.utah.edu/api/v4/projects/1869/packages/helm/powder-osc-smo-g-release/charts/ru-du-simulators-1.0.0.tgz", "sha256": "6d9d6c7d37524b33e1df28d7016ae78d0791d59b621ddfb95e1724a119cb90c5"}
+      }
+    },
+    "f-release": {
+      "index_url": "https://gitlab.flux.utah.edu/api/v4/projects/1869/packages/helm/powder-osc-smo-f-release/index.yaml",
+      "dep_commit": "5199ff5ad991b7d7df2314cd271be2b13d78841b",
+      "charts": {
+        "onap": {"version": "10.0.0", "url": "https://gitlab.flux.utah.edu/api/v4/projects/1869/packages/helm/powder-osc-smo-f-release/charts/onap-10.0.0.tgz", "sha256": "1a5b8cd5b15f908ff5e03d6280dc29895eada218f46534c7217335fe596d6e46"},
+        "nonrtric": {"version": "1.0.0", "url": "https://gitlab.flux.utah.edu/api/v4/projects/1869/packages/helm/powder-osc-smo-f-release/charts/nonrtric-1.0.0.tgz", "sha256": "b693b515009698aa9a39e0fb7fda041be4a0ef5cd180678d6eba71fc80370d36"},
+        "ru-du-simulators": {"version": "1.0.0", "url": "https://gitlab.flux.utah.edu/api/v4/projects/1869/packages/helm/powder-osc-smo-f-release/charts/ru-du-simulators-1.0.0.tgz", "sha256": "73932e258be2b1204f838be4de0ce6451b8e0bf73805f04cc9994e032c1b7792"}
+      }
+    }
+  },
+  "strimzi": {"version": "0.29.0", "url": "https://github.com/strimzi/strimzi-kafka-operator/releases/download/0.29.0/strimzi-kafka-operator-helm-3-chart-0.29.0.tgz", "sha256": "87bb22f4b674a91cea51b61edf7c0b3b92c706ac7427534c8f40278c8c712a59"}
+}

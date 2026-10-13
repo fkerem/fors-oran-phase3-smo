@@ -1,0 +1,4 @@
+# Match the official portal library; the old PyPI wheel is Python 2-only.
+geni-lib @ git+https://gitlab.flux.utah.edu/emulab/geni-lib.git@c49e33287997878262c528ca7d2c08c31f64cb69
+six==1.17.0
+PyYAML==6.0.3

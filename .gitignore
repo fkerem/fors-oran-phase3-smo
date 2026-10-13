@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+validation-output/
+runtime/
+*.pcap
+*.pcapng
+*.key
+*.pem
+*.p12
+.DS_Store

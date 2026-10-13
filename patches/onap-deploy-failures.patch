@@ -1,0 +1,25 @@
+diff --git a/kubernetes/helm/plugins/deploy/deploy.sh b/kubernetes/helm/plugins/deploy/deploy.sh
+--- a/kubernetes/helm/plugins/deploy/deploy.sh
++++ b/kubernetes/helm/plugins/deploy/deploy.sh
+@@ -1,2 +1,3 @@
+ #!/bin/bash
++set -o pipefail
+ 
+@@ -119,4 +119,4 @@ deploy_subchart() {
+         helm upgrade -i "${RELEASE}-${subchart}" $CACHE_SUBCHART_DIR/$subchart \
+          $DEPLOY_FLAGS -f $GLOBAL_OVERRIDES -f $SUBCHART_OVERRIDES \
+-         > $LOG_FILE 2>&1
++         > $LOG_FILE 2>&1 || exit $?
+ 
+@@ -238,4 +238,4 @@
+   COMPUTED_OVERRIDES=$CACHE_DIR/$CHART_NAME/computed-overrides.yaml
+   helm upgrade -i $RELEASE $CHART_DIR $FLAGS --dry-run --debug \
+-   | sed -n '/COMPUTED VALUES:/,/HOOKS:/p' | sed '1d;$d' > $COMPUTED_OVERRIDES
++   | sed -n '/COMPUTED VALUES:/,/HOOKS:/p' | sed '1d;$d' > $COMPUTED_OVERRIDES || exit $?
+ 
+@@ -252,4 +252,4 @@
+     helm upgrade -i $RELEASE $CHART_DIR $DEPLOY_FLAGS -f $COMPUTED_OVERRIDES \
+-     > $LOG_FILE.log 2>&1
++     > $LOG_FILE.log 2>&1 || exit $?
+ 
+     if [ "$VERBOSE" = "true" ]; then
