@@ -4,6 +4,8 @@ set -x
 
 # Grab our libs
 . "`dirname $0`/setup-lib.sh"
+# shellcheck source=bin/kubespray-bootstrap-lib.sh
+. "$DIRNAME/bin/kubespray-bootstrap-lib.sh"
 
 if [ -f $OURDIR/kubespray-done ]; then
     exit 0
@@ -47,13 +49,7 @@ if [ ! $? -eq 0 ]; then
 fi
 
 cd $OURDIR
-if [ -e kubespray ]; then
-    rm -rf kubespray
-fi
-git clone $KUBESPRAYREPO kubespray
-if [ -n "$KUBESPRAYVERSION" ]; then
-    cd kubespray && git checkout "$KUBESPRAYVERSION" && cd ..
-fi
+phase3_kubespray_checkout "$KUBESPRAYREPO" "$OURDIR/kubespray" "$KUBESPRAYVERSION" || exit "$?"
 
 #
 # Get Ansible and the kubespray python reqs installed.
@@ -201,7 +197,7 @@ fi
 # Get our basic configuration into place.
 #
 OVERRIDES=$INVDIR/overrides.yml
-cat <<EOF >> $OVERRIDES
+cat <<EOF > "$OVERRIDES" || exit "$?"
 override_system_hostname: false
 disable_swap: true
 ansible_python_interpreter: $PYTHONBIN
@@ -231,9 +227,7 @@ docker_version: ${DOCKERVERSION}
 EOF
 fi
 if [ -n "${KUBEVERSION}" ]; then
-    cat <<EOF >> $OVERRIDES
-kube_version: ${KUBEVERSION}
-EOF
+    phase3_write_kube_version "$KUBEVERSION" >> "$OVERRIDES" || exit "$?"
 fi
 if [ -n "$KUBEFEATUREGATES" ]; then
     echo "kube_feature_gates: $KUBEFEATUREGATES" \
@@ -470,6 +464,9 @@ EOF
 	fi
     fi
 fi
+
+# Validate adapter output before Kubespray performs its supported-version checks.
+$PYTHON "$DIRNAME/bin/validate-kubespray-overrides.py" "$OVERRIDES" "$KUBEVERSION" || exit "$?"
 
 #
 # Run ansible to build our kubernetes cluster.

@@ -74,6 +74,14 @@ exit code. The disk bootstrap also requests only the intended LVM packages.
 Regression tests execute the actual helper definitions with mocked package
 commands, without sourcing bootstrap side effects or touching real disks.
 
+The portal's `v1.34.3` selection remains unchanged. Only the Kubespray
+adapter emits the bare string `"1.34.3"` required by its version comparisons;
+Helm/chart inputs retain the selected version. Generated overrides are
+rebuilt rather than appended on retries. A clean existing Kubespray checkout
+at the configured repository/ref is reused; unexpected source edits or a
+different revision stop setup instead of deleting or resetting the checkout.
+An explicit Kubespray revision is required; there is no mutable HEAD fallback.
+
 ## Inspect the deployment
 
 On node-0:
@@ -130,7 +138,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python -m unittest discover -s tests -v
 for script in setup-*.sh bin/*.sh; do bash -n "$script" || exit; done
-shellcheck -x -S error setup-lib.sh setup-disk-space.sh setup-driver.sh setup-oran-smo.sh setup-phase3-preflight.sh setup-end.sh bin/phase3-status.sh
+shellcheck -x -S error setup-lib.sh setup-disk-space.sh setup-kubespray.sh setup-driver.sh setup-oran-smo.sh setup-phase3-preflight.sh setup-end.sh bin/phase3-status.sh bin/kubespray-bootstrap-lib.sh
 ```
 
 See `NOTICE.md` for upstream attribution and retained license notices.
