@@ -73,7 +73,22 @@ are recorded under `/local/setup/phase3-smo/compatibility/`.
 The operator container is pinned to the stock image digest previously
 observed on this experiment. Before ONAP installation it must report the
 actual environment version, pass normal probes, and stay Ready without new
-restarts for two two-minute reconciliation intervals. Kafka must also become
+restarts for a full hour. Its existing chart interface now supplies
+`JAVA_OPTS=-Xms256m -Xmx512m`, retaining the 1Gi container memory request
+and limit. This explicit heap cap avoids relying on the old JVM's observed
+oversized percentage-based selection; Java, the stock image and normal
+probes are unchanged. Existing unrelated `extraEnvs` are preserved;
+conflicting JVM settings are rejected. Acceptance verifies the actual JVM
+arguments, cgroup limit/usage and memory-event counters every 15 seconds.
+Three consecutive samples at or above 90 percent, any OOM/heap error,
+restart, identity change or loss of readiness stops acceptance. Samples and
+failure receipts remain private. The earlier four-minute receipt is historical,
+not sufficient for current heap-recovery acceptance.
+
+For an already deployed ONAP cluster, the wait command's
+`--require-onap-kafka` flag also requires continuously reconciled, Ready
+Kafka with unchanged identities/generations throughout the hour. A fresh
+installation checks the operator before creating ONAP. Kafka must also become
 Ready and reconcile its current generation; deployed Helm releases alone
 are insufficient. This does not change client libraries, chart dependencies,
 RBAC, probes, Kafka version or certificate behavior, and it does not modify
