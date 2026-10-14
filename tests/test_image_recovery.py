@@ -99,24 +99,46 @@ class ImageTests(unittest.TestCase):
         lock = images.load_lock()
         registry = [{"State": {"Running": True}, "HostConfig": {"PortBindings": {
             "5000/tcp": [{"HostIp": "10.10.1.1", "HostPort": "5000"}]}}}]
+        copied=set()
         def probe(reference):
-            if ":sha256-" in reference:
+            if ":sha256-" in reference and reference not in copied:
                 raise urllib.error.HTTPError("u", 404, "missing", {}, None)
-            return {"digest": reference.split("@", 1)[1], "platform": "linux/amd64"}
+            digest=reference.split('@',1)[1] if '@' in reference else 'sha256:'+reference.rsplit(':sha256-',1)[1]
+            return {"digest":digest,"platform":"linux/amd64"}
         def call(argv, **kwargs):
             if argv[0] == "sudo": return json.dumps(registry).encode()
             if argv[0] == "dpkg-query": return lock["skopeo_package"].encode()
+            if argv[0]=='skopeo':
+                Path(argv[argv.index('--digestfile')+1]).write_text(argv[-2].split('@',1)[1])
+                copied.add(argv[-1].removeprefix('docker://'))
             return b""
         with patch.object(images, "inspect", side_effect=probe), patch.object(images, "run", side_effect=call) as run:
             self.assertEqual(5, len(images.cache(lock)))
         copies = [c.args[0] for c in run.call_args_list if c.args[0][0] == "skopeo"]
         self.assertEqual(5, len(copies))
         for argv in copies:
-            self.assertIn("--preserve-digests", argv)
+            self.assertNotIn("--preserve-digests", argv)
+            self.assertIn('--digestfile',argv)
+            self.assertNotIn('--format',argv)
+            self.assertEqual('0',argv[argv.index('--retry-times')+1])
             self.assertIn("--dest-tls-verify=false", argv)
             self.assertNotIn("--src-tls-verify=false", argv)
             self.assertIn("docker://10.10.1.1:5000/phase3-compat/", argv[-1])
         self.assertFalse(any("apt-get" in c.args[0] for c in run.call_args_list))
+
+    def test_native_copy_digest_rewrite_is_rejected_without_next_image(self):
+        lock=images.load_lock()
+        registry=[{'State':{'Running':True},'HostConfig':{'PortBindings':{'5000/tcp':[{'HostIp':'10.10.1.1','HostPort':'5000'}]}}}]
+        def call(argv,**kwargs):
+            if argv[0]=='sudo':return json.dumps(registry).encode()
+            if argv[0]=='dpkg-query':return lock['skopeo_package'].encode()
+            Path(argv[argv.index('--digestfile')+1]).write_text('sha256:'+'0'*64);return b''
+        def probe(reference):
+            if ':sha256-' in reference:raise urllib.error.HTTPError('u',404,'missing',{},None)
+            return {'digest':reference.split('@',1)[1]}
+        with patch.object(images,'run',side_effect=call) as command,patch.object(images,'inspect',side_effect=probe):
+            with self.assertRaisesRegex(ValueError,'changed manifest digest'):images.cache(lock)
+        self.assertEqual(1,len([c for c in command.call_args_list if c.args[0][0]=='skopeo']))
 
     def test_cache_does_not_overwrite_conflicting_tag(self):
         lock = images.load_lock()

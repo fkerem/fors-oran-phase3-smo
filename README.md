@@ -138,6 +138,14 @@ LAN-only listener and the reviewed Skopeo package version. Copies preserve
 digests, use digest-derived tags and refuse unexpected tag overwrites; it
 does not install packages, restart Docker or add listeners.
 
+The pinned Ubuntu Skopeo does not provide the newer `--preserve-digests`
+option. Its supported native-copy command requests no format conversion or
+automatic retry and records the resulting digest with `--digestfile`.
+That digest, the cached tag, manifest bytes and config must all match the
+reviewed source before any receipt is accepted. A rewrite stops recovery;
+it never updates the image lock to accept an alternate artifact. See the
+[exact-version copy interface](https://github.com/containers/skopeo/blob/v1.4.1/docs/skopeo-copy.1.md).
+
 The pinned Skopeo installer refuses existing-package upgrades/removals.
 The isolated rehearsal uses only owned temporary Docker resources and
 synthetic credentials, never production Secrets or volumes. It verifies

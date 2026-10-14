@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -202,8 +203,17 @@ def cache(lock=None):
         if existing and existing["digest"] != item["digest"]:
             raise ValueError("Refusing to overwrite an unexpected cache tag")
         if not existing:
-            run(["skopeo", "copy", "--preserve-digests", "--dest-tls-verify=false",
-                 "docker://" + source, "docker://" + target], timeout=1800)
+            # The pinned Ubuntu Skopeo lacks the newer --preserve-digests flag.
+            # Do not request conversion; reject any native-copy rewrite rather than adopt a new digest.
+            with tempfile.TemporaryDirectory(prefix='phase3-copy-') as directory:
+                digest_file=Path(directory)/'copied-digest'
+                run(["skopeo", "copy", "--retry-times", "0", "--src-no-creds", "--dest-no-creds",
+                     "--dest-tls-verify=false", "--digestfile",str(digest_file),
+                     "docker://" + source, "docker://" + target], timeout=1800)
+                if digest_file.read_text().strip()!=item['digest']:
+                    raise ValueError('Native copy changed manifest digest; artifact rejected')
+        tagged=inspect(target)
+        if tagged!=verified:raise ValueError('Copied tag manifest/config differs from reviewed source')
         cached = inspect(repository + "@" + item["digest"])
         if cached != verified:
             raise ValueError("Cached manifest/config differs from reviewed source")
