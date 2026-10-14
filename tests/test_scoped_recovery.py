@@ -229,6 +229,10 @@ class GuardTests(unittest.TestCase):
         generated = guard.stateful_template_spec(ss, pod['metadata']['name'])
         self.assertEqual(pod['spec']['volumes'][0], generated['volumes'][0])
 
+    def test_storage_writer_inventory_explicitly_includes_all_namespaces(self):
+        text = (ROOT / 'bin' / 'phase3_scoped_recovery.py').read_text()
+        self.assertIn("['kubectl', 'get', 'pods', '-A', '-o', 'json', '--request-timeout=30s']", text)
+
     def test_recovery_has_no_reinstall_or_force_delete(self):
         for name in ('phase3-statefulset-recovery.py', 'phase3-held-job-resume.py', 'phase3_scoped_recovery.py'):
             text = (ROOT / 'bin' / name).read_text()

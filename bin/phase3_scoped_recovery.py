@@ -330,7 +330,7 @@ class Session:
         pv = flow.get('pv', pvc['spec']['volumeName'], namespace=None)
         if pvc['status'].get('phase') != 'Bound' or pv['status'].get('phase') != 'Bound' or pv['spec'].get('claimRef', {}).get('uid') != pvc['metadata']['uid'] or pv['spec'].get('hostPath', {}).get('path') != values['path'] or pv['spec'].get('persistentVolumeReclaimPolicy') != 'Retain':
             raise ValueError('Backing volume identity or binding changed')
-        all_pods = flow.get('pods', namespace=None)['items']
+        all_pods = json.loads(flow.run(['kubectl', 'get', 'pods', '-A', '-o', 'json', '--request-timeout=30s']))['items']
         for p in all_pods:
             if p['metadata']['uid'] == pod['metadata']['uid']:
                 continue
