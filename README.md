@@ -149,7 +149,10 @@ it never updates the image lock to accept an alternate artifact. See the
 The pinned Skopeo installer refuses existing-package upgrades/removals.
 The isolated rehearsal uses only owned temporary Docker resources and
 synthetic credentials, never production Secrets or volumes. It verifies
-all five application versions at UID 10001 and the exporter's binary hash,
+all five application versions and the exporter's binary hash, retaining the
+Elasticsearch chart's UID/fsGroup 1001 instead of incorrectly forcing its
+version probe to UID 10001. The other version probes and isolated database/
+exporter positive control use UID 10001. It checks the
 unchanged chart command/security/probes, `/metrics` and authenticated
 `mysql_up=1`. No ports are published. Successful temporary resources are
 removed; failures retain private diagnostic records/resources. This does

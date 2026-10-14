@@ -58,7 +58,21 @@ def exporter_contract(documents):
     if not contracts or any(c!=contracts[0] for c in contracts):raise ValueError('No unique retained exporter contract')
     return contracts[0]
 
-def rehearsal(manifest, output):
+def elasticsearch_uid(documents):
+    refs={'docker.io/bitnami/elasticsearch:7.9.3',replacements()['docker.io/bitnami/elasticsearch:7.9.3']}
+    found=[]
+    for resource in documents:
+        if not resource or resource.get('kind') not in ('Deployment','StatefulSet'):continue
+        spec=resource['spec']['template']['spec']
+        for container in spec.get('containers',[]):
+            if container.get('image') in refs:
+                if container.get('securityContext',{}).get('runAsUser')!=1001 or spec.get('securityContext',{}).get('fsGroup')!=1001:
+                    raise ValueError('Elasticsearch chart identity differs from the reviewed UID 1001')
+                found.append(1001)
+    if not found:raise ValueError('Elasticsearch version probe requires the retained chart identity')
+    return 1001
+
+def rehearsal(manifest, output, version_manifest=None):
     global TRACE,TRACE_REDACT,TRACE_COUNT
     os.umask(0o077)
     target=Path(output)
@@ -66,11 +80,16 @@ def rehearsal(manifest, output):
     TRACE=target.parent/(target.stem+'-trace')
     TRACE.mkdir(mode=0o700)
     lock=load_lock(); contract=exporter_contract(list(yaml.safe_load_all(Path(manifest).read_text())))
+    version_blob=Path(version_manifest or manifest).read_bytes()
+    documents=list(yaml.safe_load_all(version_blob))
+    if len(documents)==1 and isinstance(documents[0],dict) and 'items' in documents[0]:documents=documents[0]['items']
+    elastic_uid=elasticsearch_uid(documents)
     nonce=uuid.uuid4().hex[:12]; prefix='phase3-rehearsal-'+nonce
     environment=dict(os.environ,MARIADB_ROOT_PASSWORD=secrets.token_hex(24),MARIADB_ROOT_USER='root',MARIADB_METRICS_EXTRA_FLAGS=contract['flags'])
     TRACE_REDACT=environment['MARIADB_ROOT_PASSWORD'];TRACE_COUNT=0
     record={'started_utc':datetime.now(timezone.utc).isoformat(),'lock_sha256':hashlib.sha256((Path(__file__).resolve().parents[1]/'image-availability-lock.json').read_bytes()).hexdigest(),
             'manifest_sha256':hashlib.sha256(Path(manifest).read_bytes()).hexdigest(),'owner':nonce,'network':prefix,
+            'version_manifest_sha256':hashlib.sha256(version_blob).hexdigest(),'elasticsearch_chart_uid':elastic_uid,
             'containers':[],'volumes':[],'versions':[],'ready':False,'exporter_contract':contract,
             'production_secrets_or_volumes_used':False,'ports_published':False,'galera_cluster_bootstrap_validated':False}
     refs=replacements(lock)
@@ -81,18 +100,19 @@ def rehearsal(manifest, output):
             option='-v' if item['application_version']=='1.21.4' else '--version'
             command=item['binary_path']+' '+option
             if item.get('binary_sha256'):command+='; sha256sum '+item['binary_path']
-            command+='; test "$(id -u)" -eq 10001'
-            args=['run','--name',name,'--label',LABEL+'='+nonce,'--network','none','--read-only','--user','10001:10001',
+            version_uid=elastic_uid if item['application_version']=='7.9.3' else 10001
+            command+='; test "$(id -u)" -eq '+str(version_uid)
+            args=['run','--name',name,'--label',LABEL+'='+nonce,'--network','none','--read-only','--user',str(version_uid)+':'+str(version_uid),
                   '--cap-drop','ALL','--security-opt','no-new-privileges','--memory','512m','--cpus','1',
-                  '--tmpfs','/tmp:rw,size=64m,uid=10001,gid=10001','--entrypoint','/bin/sh']
+                  '--tmpfs','/tmp:rw,size=64m,uid='+str(version_uid)+',gid='+str(version_uid),'--entrypoint','/bin/sh']
             if item['application_version']=='7.9.3':
-                args+=['--env','ES_JAVA_OPTS=-Xms16m -Xmx64m','--tmpfs','/opt/bitnami/elasticsearch/logs:rw,size=16m,uid=10001,gid=10001',
-                       '--tmpfs','/opt/bitnami/elasticsearch/tmp:rw,size=64m,uid=10001,gid=10001']
+                args+=['--env','ES_JAVA_OPTS=-Xms16m -Xmx64m','--tmpfs','/opt/bitnami/elasticsearch/logs:rw,size=16m,uid=1001,gid=1001',
+                       '--tmpfs','/opt/bitnami/elasticsearch/tmp:rw,size=64m,uid=1001,gid=1001']
             result=call(args+[refs[item['original']],'-ec',command])
             if item['application_version'] not in result:raise ValueError('Application version probe mismatch')
             if item.get('binary_sha256') and item['binary_sha256'] not in result:raise ValueError('Exporter binary hash mismatch')
             record['versions'].append({'original':item['original'],'image':refs[item['original']],'version':item['application_version'],
-                                       'uid':10001,'stdout_sha256':hashlib.sha256(result.encode()).hexdigest()})
+                                       'uid':version_uid,'stdout_sha256':hashlib.sha256(result.encode()).hexdigest()})
         database=prefix+'-database'; exporter=prefix+'-exporter'
         for suffix in ('data','conf','tmp','logs'):
             volume=prefix+'-'+suffix;call(['volume','create','--label',LABEL+'='+nonce,volume]);record['volumes'].append(volume)
@@ -157,7 +177,7 @@ def rehearsal(manifest, output):
     return record
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--manifest',required=True);parser.add_argument('--output',required=True);args=parser.parse_args()
-    result=rehearsal(args.manifest,args.output)
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--manifest',required=True);parser.add_argument('--version-manifest');parser.add_argument('--output',required=True);args=parser.parse_args()
+    result=rehearsal(args.manifest,args.output,args.version_manifest)
     print('Isolated image/exporter rehearsal '+('passed' if result['ready'] else 'failed')+'; private record: '+args.output)
     raise SystemExit(0 if result['ready'] else 1)

@@ -33,6 +33,14 @@ class WorkflowTests(unittest.TestCase):
     def test_exporter_contract_retained(self):
         contract=rehearsal.exporter_contract([self.exporter()]);self.assertEqual(10001,contract['uid']);self.assertEqual('',contract['flags'])
 
+    def test_elasticsearch_version_probe_retains_chart_uid(self):
+        doc={'kind':'StatefulSet','spec':{'template':{'spec':{'securityContext':{'fsGroup':1001},'containers':[
+            {'image':'docker.io/bitnami/elasticsearch:7.9.3','securityContext':{'runAsUser':1001}}]}}}}
+        self.assertEqual(1001,rehearsal.elasticsearch_uid([doc]))
+        doc['spec']['template']['spec']['containers'][0]['securityContext']['runAsUser']=10001
+        with self.assertRaisesRegex(ValueError,'identity'):rehearsal.elasticsearch_uid([doc])
+        with self.assertRaisesRegex(ValueError,'requires'):rehearsal.elasticsearch_uid([])
+
     def test_exporter_security_probe_and_flags_changes_rejected(self):
         for change in ('security','probe','flags','uid'):
             doc=self.exporter();spec=doc['spec']['template']['spec'];container=spec['containers'][0]
