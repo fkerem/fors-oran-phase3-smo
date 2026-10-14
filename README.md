@@ -1,5 +1,43 @@
 # POWDER Phase 3 SMO profile
 
+## Explicit stalled-Pod and held-Job recovery
+
+`bin/phase3-statefulset-recovery.py` and `bin/phase3-held-job-resume.py` audit
+by default. Both require `--baseline-state`, `--expected-slice-urn`,
+`--expected-commit` and a new `--work-dir`. Mutation additionally requires
+`--apply`, `--approved-audit` and its `--approved-audit-sha256`; receipts are
+mode-specific and expire after 30 minutes. Keep baseline/receipts/traces private.
+
+The baseline schema is `phase3-scoped-v1`: the experiment slice, image-lock
+SHA-256, prior protected PVC/PV/Secret-data/excluded-Job snapshot, six held Job
+UIDs/specifications, and three original stalled Pods with owner/Node identities
+and backing PVC/path. Derive it from retained evidence, not arbitrary current
+objects. Audit records preserve exact current contracts for approval.
+
+Rollout accepts only `onap-mariadb-galera`, `onap-policy-mariadb` and
+`onap-sdnrdb-master`, one replica each, with unstarted mains and reviewed stock
+initializers. Backing hostPath directories must still be empty, canonical,
+correctly owned and on the original node. Only a hostname nodeSelector may be
+added to each template; document this operational override and retain it during
+later Helm reconciliation. No PV/PVC, image, security, probe or credential
+change is allowed. Exact UID/resource-version guarded normal Pod deletion is
+followed by a 20-minute startup/five-minute stability gate and live positive
+controls; there is no forced deletion, automatic second replacement or rollback
+of database contents. A new nonempty directory requires separate review.
+
+Job resume unsuspends only the existing reviewed UIDs after exact dependency
+controllers are reconciled/Ready or dependency Jobs Complete. It serializes
+activation, preserves completed Jobs, retains zero retries and Never restart,
+and stops on failure, duplicate Pod execution or drift. These are retry-disabled
+controls, not an exactly-once guarantee. A 60-minute monitoring timeout does
+not kill an initializer. Exit 0 means the scoped action/audit passed, 2 means
+dependencies remain blocked, and 1 means a guard/error stopped orchestration.
+
+Neither helper reinstalls Helm releases, replays AAF SMS/SDNR Jobs, renews
+certificates, disables TLS validation, changes clocks, invokes post-ONAP
+continuation or writes completion markers. Full SMO and certificate research
+acceptance remain separate gates.
+
 This independent profile prepares a three-node OSC SMO deployment for
 management and certificate lifecycle research. It derives from the official
 `PowderProfiles/O-RAN` repository at
