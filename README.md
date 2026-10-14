@@ -62,6 +62,26 @@ These local rendering and regression checks do not establish that the older
 Strimzi/ONAP stack works on a live Kubernetes 1.34 cluster. That compatibility
 must be assessed in the allocated experiment.
 
+Stock Strimzi 0.29.0's Fabric8 client rejects newer `/version` response
+fields. The setup uses its documented `STRIMZI_KUBERNETES_VERSION` override
+via the pinned chart's `extraEnvs`: the nine recognized fields come from the
+actual server response, not a claimed older Kubernetes version. Missing,
+malformed, mismatched or differently emulated versions stop setup. The raw
+response hash, forwarded fields, additional fields and generated values hash
+are recorded under `/local/setup/phase3-smo/compatibility/`.
+
+The operator container is pinned to the stock image digest previously
+observed on this experiment. Before ONAP installation it must report the
+actual environment version, pass normal probes, and stay Ready without new
+restarts for two two-minute reconciliation intervals. Kafka must also become
+Ready and reconcile its current generation; deployed Helm releases alone
+are insufficient. This does not change client libraries, chart dependencies,
+RBAC, probes, Kafka version or certificate behavior, and it does not modify
+the API response. Kubernetes 1.34 is outside Strimzi 0.29.0's listed tested
+range; this is a recorded research compatibility configuration, not a claim
+of upstream support. See the [override documentation](https://strimzi.io/docs/operators/0.29.0/configuring.html#assembly-using-the-cluster-operator-str)
+and [tested version matrix](https://strimzi.io/downloads/).
+
 No RIC, radio demo, subscriber fixture, or certificate fault case is launched.
 Upstream credential-loading shell tracing is disabled; the completion step
 reports health and writes provenance instead of emailing an admin token.

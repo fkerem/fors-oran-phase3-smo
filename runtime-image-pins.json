@@ -1,4 +1,5 @@
 {
   "docker.io/scholzj/zoo-entrance:latest": "docker.io/scholzj/zoo-entrance@sha256:77e216de4aae054475f7aab5bfeda0fa35f51883d25ac32445d919b25c58e284",
-  "curlimages/curl": "docker.io/curlimages/curl@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777"
+  "curlimages/curl": "docker.io/curlimages/curl@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777",
+  "quay.io/strimzi/operator:0.29.0": "quay.io/strimzi/operator@sha256:afde94c6d2544207cb7f3c94b54455643558a9d5daaa13b9f736cc8da20e319c"
 }

@@ -16,7 +16,7 @@ def command(args):
         raise RuntimeError("Command failed (%d): %s" % (result.returncode, " ".join(args)))
     return result.stdout
 
-def assess(nodes, workloads, pods, pvcs, releases, services):
+def assess(nodes, workloads, pods, pvcs, releases, services, kafkas=()):
     errors = []
     if len(nodes) != 3 or not all(n["ready"] for n in nodes):
         errors.append("Expected three Ready Kubernetes nodes")
@@ -45,6 +45,12 @@ def assess(nodes, workloads, pods, pvcs, releases, services):
     for name in ["sdnc-oam", "sdnc-web-service"]:
         if ("onap", name) not in service_names:
             errors.append("Required SDNC service is missing: " + name)
+    expected_kafkas = [k for k in kafkas if k["namespace"] == "onap"]
+    if not expected_kafkas:
+        errors.append("Required ONAP Kafka resource is missing")
+    for kafka in expected_kafkas:
+        if not kafka["ready"] or kafka["observed_generation"] < kafka["generation"]:
+            errors.append("Kafka is not reconciled and Ready: %s/%s" % (kafka["namespace"], kafka["name"]))
     return errors
 
 def collect():
@@ -75,6 +81,12 @@ def collect():
     services = [{"name": s["metadata"]["name"], "namespace": s["metadata"]["namespace"],
                  "type": s["spec"]["type"], "ports": s["spec"].get("ports", [])} for s in raw_services]
     releases = json.loads(command(["helm", "list", "--all", "--all-namespaces", "-o", "json"]))
+    raw_kafkas = json.loads(command(["kubectl", "get", "kafkas.kafka.strimzi.io", "-A", "-o", "json"]))["items"]
+    kafkas = [{"name": k["metadata"]["name"], "namespace": k["metadata"]["namespace"],
+               "generation": k["metadata"].get("generation", 1),
+               "observed_generation": k.get("status", {}).get("observedGeneration", 0),
+               "ready": any(c["type"] == "Ready" and c["status"] == "True" for c in k.get("status", {}).get("conditions", [])),
+               "kafka_version": k.get("spec", {}).get("kafka", {}).get("version")} for k in raw_kafkas]
     dependencies = {}
     for name, directory in {"it-dep": "/local/setup/phase3-smo/dep", "onap-oom": "/local/setup/phase3-smo/oom", "kubespray": "/local/setup/kubespray"}.items():
         if (Path(directory) / ".git").exists():
@@ -83,14 +95,21 @@ def collect():
     compatibility = {}
     for record in Path("/local/setup/phase3-smo/prepared").glob("*-changes.json"):
         compatibility[record.name] = json.loads(record.read_text())
+    operator_compatibility = []
+    for record in sorted(Path("/local/setup/phase3-smo/compatibility").glob("strimzi-*/version-override.json")):
+        entry = json.loads(record.read_text())
+        gate = record.parent / "operator-gate.json"
+        entry["gate"] = json.loads(gate.read_text()) if gate.exists() else {"ready": False}
+        operator_compatibility.append(entry)
     return {"collected_utc": datetime.now(timezone.utc).isoformat(),
             "profile_commit": command(["git", "-C", str(ROOT), "rev-parse", "HEAD"]).strip(),
             "kubernetes": json.loads(command(["kubectl", "version", "-o", "json"])),
             "helm_version": command(["helm", "version", "--short"]).strip(),
             "nodes": nodes, "workloads": workloads, "pods": pods, "pvcs": pvcs,
             "helm_releases": releases, "services": services,
+            "kafkas": kafkas, "operator_compatibility": operator_compatibility,
             "source_dependencies": dependencies, "chart_compatibility": compatibility,
-            "readiness_errors": assess(nodes, workloads, pods, pvcs, releases, services)}
+            "readiness_errors": assess(nodes, workloads, pods, pvcs, releases, services, kafkas)}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

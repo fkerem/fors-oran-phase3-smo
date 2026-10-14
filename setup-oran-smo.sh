@@ -77,16 +77,29 @@ done
 # The plugin expects a relative directory named CHART_ROOT/onap.
 tar -xzf "$work/prepared/onap.tgz" -C "$work/unpacked"
 strimzi_archive=$(lock_value charts.strimzi-kafka-operator.path)
+compatibility="$work/compatibility/strimzi-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+mkdir -p "$compatibility"
+kubectl get --raw /version --request-timeout=30s > "$compatibility/server-version.json"
+python3 "$SRC/bin/strimzi-version-compat.py" prepare \
+    --server-version-json "$compatibility/server-version.json" --expected-version "$KUBEVERSION" \
+    --values-output "$compatibility/values.yaml" --record-output "$compatibility/version-override.json"
 helm template strimzi-kafka-operator "$strimzi_archive" --namespace strimzi-system \
-    --kube-version "$KUBEVERSION" --include-crds | "$renderer" > "$work/rendered/strimzi.yaml"
+    --kube-version "$KUBEVERSION" --include-crds -f "$compatibility/values.yaml" \
+    | "$renderer" > "$work/rendered/strimzi.yaml"
 kubectl create namespace strimzi-system --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install strimzi-kafka-operator "$strimzi_archive" --namespace strimzi-system \
     --set resources.limits.memory=1Gi --set resources.requests.memory=1Gi \
-    --set watchAnyNamespace=true --post-renderer "$renderer" --wait --timeout 10m
+    --set watchAnyNamespace=true -f "$compatibility/values.yaml" --post-renderer "$renderer" --wait --timeout 10m
+python3 "$SRC/bin/strimzi-version-compat.py" wait \
+    --record "$compatibility/version-override.json" --output "$compatibility/operator-gate.json"
 kubectl create namespace onap --dry-run=client -o yaml | kubectl apply -f -
 cd "$work"
 helm -n onap deploy onap unpacked/onap --namespace onap --post-renderer "$renderer" \
     -f "$values/onap-override.yaml"
+test -n "$(kubectl -n onap get kafkas.kafka.strimzi.io -o name)" || {
+    echo "ERROR: ONAP has not created its expected Kafka resource" >&2; exit 1;
+}
+kubectl -n onap wait kafkas.kafka.strimzi.io --all --for=condition=Ready --timeout=20m
 kubectl -n onap wait deployments --for=condition=Available --all --timeout=60m
 helm upgrade --install oran-nonrtric "$work/prepared/nonrtric.tgz" \
     --namespace nonrtric --create-namespace --post-renderer "$renderer" \

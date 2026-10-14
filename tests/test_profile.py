@@ -152,20 +152,26 @@ class ReadinessTests(unittest.TestCase):
         releases = [{"name": name, "namespace": "onap", "status": "deployed"} for name in provenance.REQUIRED_RELEASES]
         services = [{"namespace": "onap", "name": name} for name in ["sdnc-oam", "sdnc-web-service"]]
         pods = [{"namespace": ns, "name": "demo", "phase": "Running", "ready": True} for ns in provenance.SMO_NAMESPACES]
-        return nodes, workloads, pods, [], releases, services
+        kafkas = [{"namespace": "onap", "name": "demo", "ready": True, "generation": 1, "observed_generation": 1}]
+        return nodes, workloads, pods, [], releases, services, kafkas
 
     def test_healthy_baseline(self): self.assertEqual([], provenance.assess(*self.baseline()))
 
     def test_swallowed_child_failure_and_pending_pvc_fail(self):
-        nodes, workloads, pods, pvcs, releases, services = self.baseline()
+        nodes, workloads, pods, pvcs, releases, services, kafkas = self.baseline()
         releases.append({"name": "onap-dmaap", "namespace": "onap", "status": "failed"})
         pvcs.append({"name": "demo", "namespace": "onap", "phase": "Pending"})
-        errors = provenance.assess(nodes, workloads, pods, pvcs, releases, services)
+        errors = provenance.assess(nodes, workloads, pods, pvcs, releases, services, kafkas)
         self.assertTrue(any("onap-dmaap" in e for e in errors))
         self.assertTrue(any("PVC" in e for e in errors))
 
     def test_missing_services_and_nodes_fail(self):
-        nodes, workloads, pods, pvcs, releases, services = self.baseline()
-        self.assertTrue(provenance.assess(nodes[:2], workloads, pods, pvcs, releases, []))
+        nodes, workloads, pods, pvcs, releases, services, kafkas = self.baseline()
+        self.assertTrue(provenance.assess(nodes[:2], workloads, pods, pvcs, releases, [], kafkas))
+
+    def test_missing_unready_or_stale_kafka_fails(self):
+        baseline = list(self.baseline())
+        for kafkas in ([], [dict(baseline[-1][0], ready=False)], [dict(baseline[-1][0], generation=2)]):
+            self.assertTrue(any("Kafka" in error for error in provenance.assess(*baseline[:-1], kafkas)))
 
 if __name__ == "__main__": unittest.main()
