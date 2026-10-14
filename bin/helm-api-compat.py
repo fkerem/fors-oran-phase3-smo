@@ -4,8 +4,11 @@ import sys
 import json
 from pathlib import Path
 import yaml
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from phase3_images import replacements
 
 IMAGE_PINS = json.loads((Path(__file__).resolve().parents[1] / "runtime-image-pins.json").read_text())
+IMAGE_PINS.update(replacements())
 
 def pin_images(value):
     if isinstance(value, dict):

@@ -1,5 +1,11 @@
 #!/bin/bash
 SRC=$(cd -- "$(dirname -- "$0")" && pwd)
+resume_after_onap=0
+case "$*" in
+    "") ;;
+    "--resume-after-onap") resume_after_onap=1 ;;
+    *) echo "Usage: $0 [--resume-after-onap]" >&2; exit 2 ;;
+esac
 # shellcheck source=setup-lib.sh
 . "$SRC/setup-lib.sh"
 set -eo pipefail
@@ -16,6 +22,7 @@ case "$(helm version --short)" in
     *) echo "ERROR: the pinned ONAP deployment plugin requires Helm 3" >&2; exit 1 ;;
 esac
 
+if [ "$resume_after_onap" -eq 0 ]; then
 # Repeat the check immediately before install; never fall back to ChartMuseum.
 python3 "$SRC/bin/smo-chart-preflight.py" --release "$OSCSMOVERSION" \
     --cache-dir "$work/charts" --output "$lock"
@@ -74,6 +81,14 @@ for name in onap nonrtric ru-du-simulators; do
     helm template "phase3-$name" "$work/prepared/$name.tgz" --namespace "phase3-preview" \
         --kube-version "$KUBEVERSION" "${overrides[@]}" | "$renderer" > "$work/rendered/$name.yaml"
 done
+# Verify availability, digest-preserving LAN cache and an isolated runtime positive control before production volumes.
+image_attempt="$work/image-preflight-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+mkdir "$image_attempt"
+python3 "$SRC/bin/phase3-ensure-skopeo.py" --apply --output "$image_attempt/package.json"
+python3 "$SRC/bin/phase3-image-preflight.py" --manifest "$work/rendered/onap.yaml" \
+    --manifest "$work/rendered/nonrtric.yaml" --manifest "$work/rendered/ru-du-simulators.yaml" \
+    --output "$image_attempt/images.json" --cache
+python3 "$SRC/bin/phase3-image-rehearsal.py" --manifest "$work/rendered/onap.yaml" --output "$image_attempt/rehearsal.json"
 # The plugin expects a relative directory named CHART_ROOT/onap.
 tar -xzf "$work/prepared/onap.tgz" -C "$work/unpacked"
 strimzi_archive=$(lock_value charts.strimzi-kafka-operator.path)
@@ -101,6 +116,20 @@ test -n "$(kubectl -n onap get kafkas.kafka.strimzi.io -o name)" || {
 }
 kubectl -n onap wait kafkas.kafka.strimzi.io --all --for=condition=Ready --timeout=20m
 kubectl -n onap wait deployments --for=condition=Available --all --timeout=60m
+else
+    # No chart downloads, rendering, Strimzi reinstall or ONAP plugin replay on continuation.
+    values="$work/dep/smo-install/helm-override/powder"
+    python3 "$SRC/bin/phase3-onap-resume-gate.py" --output "$work/resume-gate-$(date -u +%Y%m%dT%H%M%SZ)-$$.json"
+    python3 - "$work" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+root=Path(sys.argv[1]); lock=json.loads((root/'chart-lock.json').read_text())
+for name in ('nonrtric','ru-du-simulators'):
+    record=json.loads((root/'prepared'/(name+'-changes.json')).read_text())
+    if record['original_sha256']!=lock['charts'][name]['sha256'] or hashlib.sha256((root/'prepared'/(name+'.tgz')).read_bytes()).hexdigest()!=record['prepared_sha256']:
+        raise SystemExit('Prepared continuation chart differs from reviewed cache')
+PY
+fi
 helm upgrade --install oran-nonrtric "$work/prepared/nonrtric.tgz" \
     --namespace nonrtric --create-namespace --post-renderer "$renderer" \
     -f "$values/oran-override.yaml" --wait --timeout 30m

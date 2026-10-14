@@ -119,6 +119,63 @@ An explicit Kubespray revision is required; there is no mutable HEAD fallback.
 
 ## Inspect the deployment
 
+### Guarded image-availability recovery
+
+`image-availability-lock.json` records five exact old image references,
+reviewed source manifests and the linux/amd64 platform. Four replacements
+use the same application version from Bitnami Legacy. The exporter uses the
+official Prometheus `0.12.1` package instead of the unavailable Bitnami
+Debian build; this is a packaging change, not binary-equivalence evidence.
+These archived packages are a compatibility baseline, not security hardening.
+See the [Bitnami migration notice](https://github.com/bitnami/containers/issues/83267).
+
+The post-renderer maps only those exact references to the existing
+LAN cache. `bin/phase3-image-preflight.py` audits all supplied live/rendered
+manifests, including init containers and Jobs, without copying by default.
+It fails on unavailable artifacts, ambiguous architecture selections or
+digest/config mismatches. Its explicit `--cache` mode requires the existing
+LAN-only listener and the reviewed Skopeo package version. Copies preserve
+digests, use digest-derived tags and refuse unexpected tag overwrites; it
+does not install packages, restart Docker or add listeners.
+
+The pinned Skopeo installer refuses existing-package upgrades/removals.
+The isolated rehearsal uses only owned temporary Docker resources and
+synthetic credentials, never production Secrets or volumes. It verifies
+all five application versions at UID 10001 and the exporter's binary hash,
+unchanged chart command/security/probes, `/metrics` and authenticated
+`mysql_up=1`. No ports are published. Successful temporary resources are
+removed; failures retain private diagnostic records/resources. This does
+not rehearse the full multi-node Galera topology.
+
+`bin/phase3-image-recovery.py` audits by default. Its explicit `--apply`
+requires the expected experiment/revision, a successful one-hour operator
+gate, cache/rehearsal receipts and both worker pull receipts. It compares
+retained subcharts with the pinned archive, renders four targeted Helm
+upgrades and rejects all changes except approved image references and the
+six exact eligible Jobs' hold/single-attempt controls. Storage identities,
+application Secret data and excluded Job specs/UIDs are preserved; Helm's
+own release-storage Secrets are recorded by the normal Helm operation.
+
+The six eligible Jobs require complete retained Pod/init-container history
+with no externally modifying command execution. The SDNC configuration
+initializer is allowed only when its output is Pod-local emptyDir storage.
+AAF preload and SDNR initialization are explicitly excluded, not assumed
+safe. Recreated candidates start suspended with `backoffLimit: 0` and
+`restartPolicy: Never`; dependency readiness controls activation. UID and
+resource-version tests protect deletion/activation, and a failed attempt
+stops without implicit replay, dependency upgrade or destructive rollback.
+Successful Jobs are never recreated.
+
+Only the four selected ONAP child releases are upgraded in existing
+experiments; the umbrella plugin and completed disk/Kubernetes/worker setup
+must not be rerun. `/local/repository/setup-oran-smo.sh --resume-after-onap`
+is a separate continuation, gated by a currently healthy accepted operator,
+all ONAP Jobs Complete, Ready controllers/Kafka and Bound storage. It skips
+Strimzi/ONAP reinstallation and verifies retained continuation chart hashes.
+An audit or selected-Job success does not attest to the full SMO baseline.
+Actual application, rehearsal and readiness outcomes must be taken from
+the allocated experiment's private receipts, not these local tests.
+
 On node-0:
 
 ```sh

@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "platform": "linux/amd64",
+  "cache_registry": "10.10.1.1:5000",
+  "skopeo_package": "1.4.1+ds1-1ubuntu0.1",
+  "classification": "Compatibility recovery; unsupported legacy packages, not security hardening",
+  "images": [
+    {
+      "original": "docker.io/bitnami/mariadb-galera:10.5.8",
+      "source_repository": "docker.io/bitnamilegacy/mariadb-galera",
+      "digest": "sha256:b4474a41812f284dfdf3b85cc7da35985bd493043859a8c96b5ebb45a8704d75",
+      "application_version": "10.5.8",
+      "binary_path": "/opt/bitnami/mariadb/sbin/mysqld",
+      "provenance": "Same application version from Bitnami Legacy; historical original digest unavailable; binary equivalence not established"
+    },
+    {
+      "original": "docker.io/bitnami/mariadb:10.5.8",
+      "source_repository": "docker.io/bitnamilegacy/mariadb",
+      "digest": "sha256:5025953d7fb060e236bb1add56b8955308ef34cc338cecd53675f04495605314",
+      "application_version": "10.5.8",
+      "binary_path": "/opt/bitnami/mariadb/sbin/mysqld",
+      "provenance": "Same application version from Bitnami Legacy; historical original digest unavailable; binary equivalence not established"
+    },
+    {
+      "original": "docker.io/bitnami/elasticsearch:7.9.3",
+      "source_repository": "docker.io/bitnamilegacy/elasticsearch",
+      "digest": "sha256:39263f5faffb55470ab7f16de35fcccd2dfa5ad82db59a4988300e9f7a534804",
+      "application_version": "7.9.3",
+      "binary_path": "/opt/bitnami/elasticsearch/bin/elasticsearch",
+      "provenance": "Same application version from Bitnami Legacy; historical original digest unavailable; binary equivalence not established"
+    },
+    {
+      "original": "docker.io/bitnami/nginx:1.21.4",
+      "source_repository": "docker.io/bitnamilegacy/nginx",
+      "digest": "sha256:1499abfa66248fa26f758f3b4723599a46eadb161c7094b4a1c565fd1b845205",
+      "application_version": "1.21.4",
+      "binary_path": "/opt/bitnami/nginx/sbin/nginx",
+      "provenance": "Same application version from Bitnami Legacy; historical original digest unavailable; binary equivalence not established"
+    },
+    {
+      "original": "docker.io/bitnami/mysqld-exporter:0.12.1-debian-10-r264",
+      "source_repository": "docker.io/prom/mysqld-exporter",
+      "digest": "sha256:3851cf4f9e48dbe2b3efab2a93487d718eadf57de22440f7d5dfb377e2ed7718",
+      "application_version": "0.12.1",
+      "binary_path": "/bin/mysqld_exporter",
+      "binary_sha256": "955479ef45343a0d998b1c0627cc9f3e10a1d04fd16e9005e4ed7838c3642cd9",
+      "provenance": "Prometheus packaging replacement at application version 0.12.1; not the missing Bitnami Debian build and not binary equivalence",
+      "source": "https://github.com/prometheus/mysqld_exporter/tree/v0.12.1"
+    }
+  ]
+}

@@ -16,7 +16,7 @@ def command(args):
         raise RuntimeError("Command failed (%d): %s" % (result.returncode, " ".join(args)))
     return result.stdout
 
-def assess(nodes, workloads, pods, pvcs, releases, services, kafkas=()):
+def assess(nodes, workloads, pods, pvcs, releases, services, kafkas=(), jobs=None):
     errors = []
     if len(nodes) != 3 or not all(n["ready"] for n in nodes):
         errors.append("Expected three Ready Kubernetes nodes")
@@ -51,6 +51,11 @@ def assess(nodes, workloads, pods, pvcs, releases, services, kafkas=()):
     for kafka in expected_kafkas:
         if not kafka["ready"] or kafka["observed_generation"] < kafka["generation"]:
             errors.append("Kafka is not reconciled and Ready: %s/%s" % (kafka["namespace"], kafka["name"]))
+    if jobs is not None:
+        if not any(j['namespace']=='onap' for j in jobs):errors.append('Required ONAP initialization Jobs are missing')
+        for job in jobs:
+            if job['namespace'] in SMO_NAMESPACES and not job['complete']:
+                errors.append('Job is not Complete: %s/%s' % (job['namespace'],job['name']))
     return errors
 
 def collect():
@@ -82,6 +87,10 @@ def collect():
                  "type": s["spec"]["type"], "ports": s["spec"].get("ports", [])} for s in raw_services]
     releases = json.loads(command(["helm", "list", "--all", "--all-namespaces", "-o", "json"]))
     raw_kafkas = json.loads(command(["kubectl", "get", "kafkas.kafka.strimzi.io", "-A", "-o", "json"]))["items"]
+    raw_jobs=json.loads(command(['kubectl','get','jobs','-A','-o','json']))['items']
+    jobs=[{'name':j['metadata']['name'],'namespace':j['metadata']['namespace'],'uid':j['metadata']['uid'],
+           'complete':any(c['type']=='Complete' and c['status']=='True' for c in j.get('status',{}).get('conditions',[])),
+           'failed':j.get('status',{}).get('failed',0),'suspended':j.get('spec',{}).get('suspend',False)} for j in raw_jobs]
     kafkas = [{"name": k["metadata"]["name"], "namespace": k["metadata"]["namespace"],
                "generation": k["metadata"].get("generation", 1),
                "observed_generation": k.get("status", {}).get("observedGeneration", 0),
@@ -107,9 +116,9 @@ def collect():
             "helm_version": command(["helm", "version", "--short"]).strip(),
             "nodes": nodes, "workloads": workloads, "pods": pods, "pvcs": pvcs,
             "helm_releases": releases, "services": services,
-            "kafkas": kafkas, "operator_compatibility": operator_compatibility,
+            "kafkas": kafkas, "jobs": jobs, "operator_compatibility": operator_compatibility,
             "source_dependencies": dependencies, "chart_compatibility": compatibility,
-            "readiness_errors": assess(nodes, workloads, pods, pvcs, releases, services, kafkas)}
+            "readiness_errors": assess(nodes, workloads, pods, pvcs, releases, services, kafkas, jobs)}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
