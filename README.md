@@ -44,6 +44,9 @@ installation. Before ONAP creation it:
 - Resolves the newly allocated `node-2` worker's current UID and requires it
   to be Ready/schedulable. The three database StatefulSets and their hostPath
   PVs receive matching placement constraints before first installation.
+  A read-only SSH probe to the current logical worker verifies its allocation
+  identity and refuses noncanonical or nonempty backing directories before
+  first install. It creates, deletes and migrates nothing on the peer.
   This is not data migration or reuse of a previous allocation's disks.
 
 Every new ONAP Job uses `backoffLimit: 0` and `restartPolicy: Never`. Failures

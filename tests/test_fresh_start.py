@@ -241,5 +241,15 @@ class FreshOverlayTests(unittest.TestCase):
         result=subprocess.run([sys.executable,str(ROOT/'bin/phase3-fresh-renderer.py')],input='',text=True,capture_output=True,env=env)
         self.assertNotEqual(0,result.returncode)
 
+    def test_storage_probe_checks_peer_identity_before_paths(self):
+        self.assertLess(fresh.STORAGE_INSPECTION.index('actual!=sys.argv[1]'),fresh.STORAGE_INSPECTION.index('for value in paths'))
+        self.assertIn('any(path.iterdir())',fresh.STORAGE_INSPECTION)
+        self.assertNotIn('mkdir',fresh.STORAGE_INSPECTION)
+        self.assertNotIn('unlink',fresh.STORAGE_INSPECTION)
+        with patch.object(fresh,'run',return_value=b'{"paths":[]}' ) as command:
+            fresh.storage_inspection('urn:publicid:IDN+emulab.net:p+slice+fresh')
+            self.assertIn('node-2',command.call_args.args[0])
+            self.assertNotIn('pc12-fort.emulab.net',' '.join(command.call_args.args[0]))
+
 
 if __name__=='__main__':unittest.main()

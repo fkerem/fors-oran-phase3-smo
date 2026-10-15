@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import socket
 import ssl
@@ -115,6 +116,31 @@ def assert_empty_onap():
         raise ValueError('Fresh installation refused: ONAP workloads/claims already exist; use a separate reviewed recovery')
 
 
+STORAGE_INSPECTION = '''import json, pathlib, subprocess, sys
+actual=subprocess.check_output(['geni-get','slice_urn'],text=True).strip()
+if actual!=sys.argv[1]:raise SystemExit('Storage peer allocation mismatch')
+paths=['/storage/nfs/deployment-1/onap/mariadb-galera/data-0',
+       '/storage/nfs/deployment-1/onap/policy/maria/data-0',
+       '/storage/nfs/deployment-1/onap/elastic-master-0']
+records=[]
+for value in paths:
+    path=pathlib.Path(value)
+    if str(path.resolve())!=value:raise SystemExit('Noncanonical backing path')
+    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+        raise SystemExit('Backing path is not an empty directory')
+    records.append({'path':value,'exists':path.exists(),'empty':True})
+print(json.dumps({'slice_urn':actual,'paths':records}))
+'''
+
+
+def storage_inspection(slice_urn):
+    # Resolve the new logical peer; its own geni-get must match before filesystem
+    # inspection. This command is read-only and never uses an old physical host.
+    command='sudo -n python3 - '+shlex.quote(slice_urn)
+    return json.loads(run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=20','node-2',command],
+                          data=STORAGE_INSPECTION.encode(),timeout=60))
+
+
 def prepare(directory, slice_urn):
     if not re.fullmatch(r'urn:publicid:IDN\+emulab.net:[A-Za-z0-9_-]+\+slice\+[A-Za-z0-9_-]+',slice_urn):
         raise ValueError('Expected the current allocation slice URN')
@@ -122,6 +148,7 @@ def prepare(directory, slice_urn):
     storage = select_storage_node(nodes)
     current = {n['metadata']['name']:n['metadata']['uid'] for n in nodes}
     identity = hashlib.sha256(json.dumps([slice_urn,current],sort_keys=True).encode()).hexdigest()
+    storage_check = storage_inspection(slice_urn)
     # No output from runtime credentials is printed; ownership and image IDs are recorded instead.
     record = offline_rehearsal(directory,identity[:24])
     directory = Path(directory).resolve()
@@ -129,6 +156,7 @@ def prepare(directory, slice_urn):
     context = {'schema':1,'baseline':'fresh-isolated-lab-pki','slice_urn':slice_urn,'node_uids':current,
                'storage_node':storage,'pki_directory':str(pki),'root_sha256':record['root_sha256'],
                'secret_name':'phase3-lab-pki-'+record['root_sha256'][:16],
+               'storage_preflight':storage_check,
                'rehearsal_sha256':hashlib.sha256((directory/'rehearsal.json').read_bytes()).hexdigest()}
     for namespace in ('onap','nonrtric','network'):
         existing = kubectl('get','namespace',namespace,'--ignore-not-found','-o','name').strip()
@@ -169,6 +197,8 @@ def verify_context(path, require_empty=False):
         raise ValueError('Runtime PKI Secret changed')
     if require_empty:
         assert_empty_onap()
+        if storage_inspection(context['slice_urn'])!=context['storage_preflight']:
+            raise ValueError('Backing-directory state changed before first install')
     return context
 
 
