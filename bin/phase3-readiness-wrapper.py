@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Apply one reviewed predicate correction to the otherwise unchanged helper."""
+# Predicate derived from ONAP OOM readiness, copyright 2020 Orange and Nokia.
+# Licensed under Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0
 import hashlib
 from pathlib import Path
 

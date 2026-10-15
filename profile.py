@@ -85,6 +85,8 @@ Three d740 nodes run Kubernetes, the OSC SMO and NTS management simulators.
 The profile requests no radios, spectrum, shared VLANs or extra public IPs.
 The later PyNTS certificate experiment is a separate, explicitly launched
 runtime; NTS readiness does not validate that notifier.
+New experiments use an experiment-local lab PKI and a source-verified Job
+readiness compatibility wrapper; this is not the unmodified stock PKI.
 """)
 tour.Instructions(IG.Tour.MARKDOWN, """
 Wait for every startup service to show **Finished**. On node-0 inspect:
@@ -98,6 +100,9 @@ cat /local/setup/phase3-smo/chart-lock.json
 Review `/local/logs/setup.log` and `/local/logs/setup-oran-smo.sh.log` if setup
 fails. Failed downloads, checksums, chart/API checks or workload waits stop
 setup; no completion marker is written. Keep logs and credentials private.
+Fresh-start receipts are under `/local/setup/phase3-smo/fresh-start/`.
+That directory also contains private keys and passwords: do not upload it.
+The existing one-hour operator stability gate still applies.
 Kubernetes credentials are in `~/.kube/config`.
 
 For local SMO UI access, use an SSH tunnel and loopback Kubernetes port

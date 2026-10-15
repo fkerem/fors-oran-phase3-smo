@@ -1,5 +1,73 @@
 # POWDER Phase 3 SMO profile
 
+## New experiments: fresh-start compatibility baseline
+
+**Update/Pull this repository-backed profile in POWDER and compare the full
+selected commit with the published `main` before instantiation.** Pushing to
+GitHub does not update a portal-cached profile revision. Keep the three-d740
+defaults; no radio, spectrum, shared VLAN or extra public IP is needed.
+
+New installs now use a separate, fail-closed fresh renderer. It does not run
+the old experiment's recovery receipts or rotate certificates in an existing
+installation. Before ONAP creation it:
+
+- Pins stock readiness 3.0.1, AAF config/core 2.1.23, agent 2.1.20 and Cassandra
+  2.1.23 to exact linux/amd64 manifest digests. A read-only readiness wrapper
+  verifies the original source SHA-256 and changes only the Job-completion
+  predicate: find `Complete=True`, independent of condition order; do not
+  accept `Failed=True` or `Suspended=True`. Stock API authentication, argument
+  handling, retry duration and timeout behavior remain unchanged.
+- Creates a new lab root, issuing intermediate and AAF server certificate
+  privately for this allocation. The issuer DN `intermediateCA_9` is retained
+  for CADI identity compatibility, **not** its old key, certificate or trust.
+  The server's service SANs and store aliases/formats are retained. Root and
+  intermediate lifetimes exceed the stock one-year issued-leaf lifetime.
+  The stock public-truststore password `changeit` is retained for consumer
+  compatibility; private key stores use a new random password. This is a
+  laboratory compatibility baseline, not production PKI hardening.
+- Rehearses the exact stock AAF bootstrap offline using its digest-pinned
+  image, then installs the generated server/signing stores and encrypted
+  property references before any server starts. Both JKS and PKCS12 trust
+  stores are created with that image's actual Java keytool. The rehearsal
+  container has no network or published ports. Original initializer output
+  stays in a private file, not Pod logs or CI artifacts.
+  A loopback-only Java TLS rehearsal checks both store formats and positive
+  hostname validation, with wrong-hostname and untrusted-root rejection.
+  Offline regression tests also reject an expired intermediate beneath a
+  still-current leaf; none of these controls is a live AAF retrieval claim.
+- Supplies all rendered AAF agent trust mounts with the new lab root and
+  uses immutable, content-addressed helper ConfigMaps and an immutable
+  runtime Secret. The encrypted root private key remains host-private and
+  is excluded from the Pod Secret. Existing generated material is never
+  silently overwritten or regenerated. PKI directories are mode 0700 and
+  generated files are 0600.
+- Resolves the newly allocated `node-2` worker's current UID and requires it
+  to be Ready/schedulable. The three database StatefulSets and their hostPath
+  PVs receive matching placement constraints before first installation.
+  This is not data migration or reuse of a previous allocation's disks.
+
+Every new ONAP Job uses `backoffLimit: 0` and `restartPolicy: Never`. Failures
+stop acceptance rather than replaying initializers. The post-ONAP gate
+requires reconciled controllers, Complete Jobs, a hostname-validated AAF TLS
+session presenting this allocation's exact leaf, and successful actual AAF
+agent initializers. Only then may non-RT RIC and NTS installation continue.
+The final full-SMO provenance gate still controls the completion marker.
+
+The private receipts are under `/local/setup/phase3-smo/fresh-start/`:
+`rehearsal.json`, `context.json` and, after live ONAP acceptance,
+`onap-acceptance.json`. Do **not** upload that directory: it also holds keys,
+passwords and private bootstrap logs. `bin/phase3-status.sh` prints only a
+bounded receipt status, not the private payloads. A partially started install
+is a separate recovery review; re-running fresh preparation refuses existing
+ONAP workloads/claims and never deletes data or resets failed Jobs.
+
+Local regression/render checks and the isolated Linux CI bootstrap do not
+prove a complete new experiment. Actual AAF retrieval, full ONAP/SMO/NTS
+readiness, and the later scheduled notification positive control must still
+pass on the new allocation. No certificate fault cases or PyNTS runtime are
+started automatically. The operator's existing full-hour stability gate is
+retained, so startup is not expected to be immediate.
+
 ## Explicit stalled-Pod and held-Job recovery
 
 `bin/phase3-statefulset-recovery.py` and `bin/phase3-held-job-resume.py` audit
@@ -218,7 +286,8 @@ Successful Jobs are never recreated.
 Only the four selected ONAP child releases are upgraded in existing
 experiments; the umbrella plugin and completed disk/Kubernetes/worker setup
 must not be rerun. `/local/repository/setup-oran-smo.sh --resume-after-onap`
-is a separate continuation, gated by a currently healthy accepted operator,
+is a separate continuation for fresh-baseline installs with retained PKI and
+ONAP acceptance receipts, gated by a currently healthy accepted operator,
 all ONAP Jobs Complete, Ready controllers/Kafka and Bound storage. It skips
 Strimzi/ONAP reinstallation and verifies retained continuation chart hashes.
 An audit or selected-Job success does not attest to the full SMO baseline.

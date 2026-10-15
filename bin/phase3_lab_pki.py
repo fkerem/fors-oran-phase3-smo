@@ -86,7 +86,9 @@ def generate(directory, experiment):
     record = {'schema':1, 'experiment':experiment, 'baseline':'fresh-isolated-lab-pki',
               'issuer_dn_retained_for_cadi_compatibility':True, 'stock_truststore_password_retained':True,
               'sans':SANS, 'certificates':{n:{'sha256':c.fingerprint(hashes.SHA256()).hex(),
-                'not_after':c.not_valid_after.isoformat()+'Z'} for n,c in [('root',root),('intermediate',intermediate),('server',leaf)]}}
+                'not_after':(c.not_valid_after_utc if hasattr(c,'not_valid_after_utc') else
+                    c.not_valid_after.replace(tzinfo=dt.timezone.utc)).isoformat()}
+                    for n,c in [('root',root),('intermediate',intermediate),('server',leaf)]}}
     private_write(directory/'public-metadata.json', (json.dumps(record,indent=2)+'\n').encode())
     return record
 

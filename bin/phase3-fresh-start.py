@@ -75,6 +75,10 @@ def offline_rehearsal(directory, experiment):
     wrapper = importlib.util.module_from_spec(spec); spec.loader.exec_module(wrapper)
     wrapper.patched_source(source)
     build_truststores(pki,directory)
+    run(docker_prefix()+['run','--rm','--network','none',
+        '--mount','type=bind,src='+str(pki)+',dst=/phase3-pki,readonly',
+        '--mount','type=bind,src='+str(ROOT/'tools/Phase3PkiTlsProbe.java')+',dst=/checks/Phase3PkiTlsProbe.java,readonly',
+        '--entrypoint','java',CONFIG_IMAGE,'/checks/Phase3PkiTlsProbe.java','/phase3-pki'],timeout=90,directory=directory)
     output = directory/'offline-server-config'
     output.mkdir(mode=0o700)
     wrapper_path = ROOT/'bin/phase3-aaf-bootstrap.sh'
@@ -99,6 +103,7 @@ def offline_rehearsal(directory, experiment):
               'aaf_bootstrap_source_sha256':source_digest,
               'root_sha256':metadata['certificates']['root']['sha256'],
               'offline_server_bootstrap':True,'live_agent_retrieval_tested':False,
+              'isolated_java_tls_controls':True,
               'full_smo_tested':False,'network_during_bootstrap':'none'}
     private_write(directory/'rehearsal.json',(json.dumps(record,indent=2)+'\n').encode())
     return record
