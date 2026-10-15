@@ -1,5 +1,10 @@
 {
   "docker.io/scholzj/zoo-entrance:latest": "docker.io/scholzj/zoo-entrance@sha256:77e216de4aae054475f7aab5bfeda0fa35f51883d25ac32445d919b25c58e284",
   "curlimages/curl": "docker.io/curlimages/curl@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777",
-  "quay.io/strimzi/operator:0.29.0": "quay.io/strimzi/operator@sha256:afde94c6d2544207cb7f3c94b54455643558a9d5daaa13b9f736cc8da20e319c"
+  "quay.io/strimzi/operator:0.29.0": "quay.io/strimzi/operator@sha256:afde94c6d2544207cb7f3c94b54455643558a9d5daaa13b9f736cc8da20e319c",
+  "nexus3.onap.org:10001/onap/oom/readiness:3.0.1": "nexus3.onap.org:10001/onap/oom/readiness@sha256:317c8a361ae73750f4d4a1b682c42b73de39083f73228dede31fd68b16c089db",
+  "nexus3.onap.org:10001/onap/aaf/aaf_config:2.1.23": "nexus3.onap.org:10001/onap/aaf/aaf_config@sha256:681b0a23c5d99e9bf469f532a5e75afb5ff45cce78cb6d16579286fb6e05a3d5",
+  "nexus3.onap.org:10001/onap/aaf/aaf_agent:2.1.20": "nexus3.onap.org:10001/onap/aaf/aaf_agent@sha256:fbc54287e95950956aeb8c5f86f2618fb52192aee389e2fa212c183395bb5c2b",
+  "nexus3.onap.org:10001/onap/aaf/aaf_core:2.1.23": "nexus3.onap.org:10001/onap/aaf/aaf_core@sha256:f8d4d9e0868b4197d01d06d531c6a40a4b54c77f7fade563a379f7d9f6898e51",
+  "nexus3.onap.org:10001/onap/aaf/aaf_cass:2.1.23": "nexus3.onap.org:10001/onap/aaf/aaf_cass@sha256:b5dc66a8041366deeb9441c634469587000b17672dd654aae0a8251d37af761f"
 }

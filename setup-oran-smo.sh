@@ -89,6 +89,13 @@ python3 "$SRC/bin/phase3-image-preflight.py" --manifest "$work/rendered/onap.yam
     --manifest "$work/rendered/nonrtric.yaml" --manifest "$work/rendered/ru-du-simulators.yaml" \
     --output "$image_attempt/images.json" --cache
 python3 "$SRC/bin/phase3-image-rehearsal.py" --manifest "$work/rendered/onap.yaml" --output "$image_attempt/rehearsal.json"
+# A new allocation gets new keys, immutable helpers, and a network-isolated
+# rehearsal before its first ONAP workload. Never rotate an existing install here.
+maybe_install_packages python3-cryptography
+python3 "$SRC/bin/phase3-fresh-start.py" prepare --directory "$work/fresh-start" \
+    --slice-urn "$(geni-get slice_urn)"
+export PHASE3_FRESH_CONTEXT="$work/fresh-start/context.json"
+renderer="$SRC/bin/phase3-fresh-renderer.py"
 # The plugin expects a relative directory named CHART_ROOT/onap.
 tar -xzf "$work/prepared/onap.tgz" -C "$work/unpacked"
 strimzi_archive=$(lock_value charts.strimzi-kafka-operator.path)
@@ -109,16 +116,21 @@ python3 "$SRC/bin/strimzi-version-compat.py" wait \
     --record "$compatibility/version-override.json" --output "$compatibility/operator-gate.json"
 kubectl create namespace onap --dry-run=client -o yaml | kubectl apply -f -
 cd "$work"
+python3 "$SRC/bin/phase3-fresh-start.py" verify --context "$PHASE3_FRESH_CONTEXT" --require-empty-onap
 helm -n onap deploy onap unpacked/onap --namespace onap --post-renderer "$renderer" \
     -f "$values/onap-override.yaml"
 test -n "$(kubectl -n onap get kafkas.kafka.strimzi.io -o name)" || {
     echo "ERROR: ONAP has not created its expected Kafka resource" >&2; exit 1;
 }
 kubectl -n onap wait kafkas.kafka.strimzi.io --all --for=condition=Ready --timeout=20m
-kubectl -n onap wait deployments --for=condition=Available --all --timeout=60m
+python3 "$SRC/bin/phase3-fresh-start.py" wait-onap --context "$PHASE3_FRESH_CONTEXT" --timeout 3600
 else
     # No chart downloads, rendering, Strimzi reinstall or ONAP plugin replay on continuation.
     values="$work/dep/smo-install/helm-override/powder"
+    export PHASE3_FRESH_CONTEXT="$work/fresh-start/context.json"
+    python3 "$SRC/bin/phase3-fresh-start.py" verify --context "$PHASE3_FRESH_CONTEXT"
+    test -s "$work/fresh-start/onap-acceptance.json"
+    renderer="$SRC/bin/phase3-fresh-renderer.py"
     python3 "$SRC/bin/phase3-onap-resume-gate.py" --output "$work/resume-gate-$(date -u +%Y%m%dT%H%M%SZ)-$$.json"
     python3 - "$work" <<'PY'
 import hashlib,json,sys

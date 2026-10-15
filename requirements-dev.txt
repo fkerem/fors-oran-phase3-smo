@@ -2,3 +2,4 @@
 geni-lib @ git+https://gitlab.flux.utah.edu/emulab/geni-lib.git@c49e33287997878262c528ca7d2c08c31f64cb69
 six==1.17.0
 PyYAML==6.0.3
+cryptography==46.0.3

@@ -12,3 +12,14 @@ jobs:
       - run: .venv/bin/python -m unittest discover -s tests -v
       - run: for script in setup-*.sh bin/*.sh; do bash -n "$script" || exit; done
       - run: shellcheck -x -S error setup-lib.sh setup-disk-space.sh setup-kubespray.sh setup-driver.sh setup-oran-smo.sh setup-phase3-preflight.sh setup-end.sh bin/phase3-status.sh bin/kubespray-bootstrap-lib.sh
+      - run: .venv/bin/python tools/check-public-tree.py
+  fresh-bootstrap:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: python3 -m venv .venv
+      - run: .venv/bin/python -m pip install -r requirements-dev.txt
+      # No cluster, application data, or live credentials. Generated PKI and
+      # bootstrap logs stay in runner-private temporary storage, never artifacts.
+      - run: .venv/bin/python bin/phase3-fresh-start.py rehearse --directory "$RUNNER_TEMP/phase3-bootstrap"
