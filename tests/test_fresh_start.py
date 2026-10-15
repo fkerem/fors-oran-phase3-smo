@@ -22,7 +22,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'bin'))
-from phase3_lab_pki import generate, secret, CONFIG_IMAGE, AGENT_IMAGE, SANS
+from phase3_lab_pki import generate, secret, CONFIG_IMAGE, AGENT_IMAGE, SANS, inspect_pkcs12, PKCS12_PACKAGING
 from phase3_fresh import overlay, helper_config, select_storage_node, READINESS_IMAGE
 
 
@@ -107,6 +107,14 @@ class PkiTests(unittest.TestCase):
         before=(self.path/'root.cer').read_bytes()
         with self.assertRaises(ValueError):generate(self.path,'different-allocation')
         self.assertEqual(before,(self.path/'root.cer').read_bytes())
+
+    def test_explicit_packaging_and_runtime_metadata(self):
+        self.assertEqual(PKCS12_PACKAGING,self.record['pkcs12_packaging'])
+        self.assertIn('cryptography_openssl',self.record['runtime'])
+        for name in ('server.p12','signer.p12'):
+            self.assertEqual(PKCS12_PACKAGING,inspect_pkcs12(self.path/name,self.path/'store-password'))
+        with patch('phase3_lab_pki.subprocess.run',return_value=NS(returncode=0,stderr=b'MAC: sha256, Iteration 50000')):
+            with self.assertRaises(ValueError):inspect_pkcs12(self.path/'server.p12',self.path/'store-password')
 
     def test_expired_intermediate_is_rejected_with_a_current_leaf(self):
         password=(self.path/'store-password').read_bytes()

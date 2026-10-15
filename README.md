@@ -6,6 +6,8 @@
 selected commit with the published `main` before instantiation.** Pushing to
 GitHub does not update a portal-cached profile revision. Keep the three-d740
 defaults; no radio, spectrum, shared VLAN or extra public IP is needed.
+Reinstantiating an old experiment can retain its historical revision: select
+the refreshed profile revision deliberately, rather than replaying the old pin.
 
 New installs now use a separate, fail-closed fresh renderer. It does not run
 the old experiment's recovery receipts or rotate certificates in an existing
@@ -25,6 +27,13 @@ installation. Before ONAP creation it:
   The stock public-truststore password `changeit` is retained for consumer
   compatibility; private key stores use a new random password. This is a
   laboratory compatibility baseline, not production PKI hardening.
+  The normal startup generator explicitly exports both private-key stores
+  with `PBE-SHA1-3DES`, SHA-1 MAC and 50,000 encryption/MAC iterations.
+  X.509 certificate signatures remain SHA-256. No Python/OpenSSL defaults
+  are inherited: Jammy cryptography 3.4 with OpenSSL 3 otherwise produces a
+  SHA-256 MAC rejected by this pinned AAF Java runtime. Both Jammy's system
+  stack and the modern development stack rehearse against the exact image
+  in CI. This fix is automatic for new installs; no recovery flag is needed.
 - Rehearses the exact stock AAF bootstrap offline using its digest-pinned
   image, then installs the generated server/signing stores and encrypted
   property references before any server starts. Both JKS and PKCS12 trust
@@ -70,6 +79,21 @@ readiness, and the later scheduled notification positive control must still
 pass on the new allocation. No certificate fault cases or PyNTS runtime are
 started automatically. The operator's existing full-hour stability gate is
 retained, so startup is not expected to be immediate.
+
+## Explicit recovery before any SMO deployment
+
+For the reviewed isolated-rehearsal `HmacPBESHA256 not available` failure
+only, audit with `python3 bin/phase3-predeployment-recovery.py --expected-slice URN`.
+After reviewing the audit and updating to a CI-tested profile commit, use
+`/local/repository/setup-driver.sh --resume-before-smo --expected-slice URN`.
+This exclusive-lock path checks allocation/Node identities, completed
+infrastructure, absent SMO/operator namespaces/releases/volumes, and empty
+backing directories. It preserves every failed PKI artifact and copies the
+old logs/receipts to a mode-0700 `predeployment-recovery-*` directory with a
+private hash ledger. Nothing is deleted. A new undeployed PKI trial then
+runs through the ordinary SMO stage and every live acceptance gate.
+Disk, NFS, SSH and Kubernetes provisioning are not replayed. Existing SMO
+state or a different failure refuses this recovery. Do not upload archives.
 
 ## Explicit stalled-Pod and held-Job recovery
 

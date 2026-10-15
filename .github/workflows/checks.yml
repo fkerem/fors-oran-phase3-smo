@@ -16,10 +16,23 @@ jobs:
   fresh-bootstrap:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [modern, jammy-system]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - run: python3 -m venv .venv
-      - run: .venv/bin/python -m pip install -r requirements-dev.txt
+      - if: matrix.crypto == 'modern'
+        run: python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt
+      - if: matrix.crypto == 'jammy-system'
+        run: sudo apt-get update && sudo apt-get install -y python3-cryptography
       # No cluster, application data, or live credentials. Generated PKI and
       # bootstrap logs stay in runner-private temporary storage, never artifacts.
-      - run: .venv/bin/python bin/phase3-fresh-start.py rehearse --directory "$RUNNER_TEMP/phase3-bootstrap"
+      - if: matrix.crypto == 'modern'
+        run: .venv/bin/python bin/phase3-fresh-start.py rehearse --directory "$RUNNER_TEMP/phase3-bootstrap"
+      - if: matrix.crypto == 'jammy-system'
+        env:
+          PYTHONNOUSERSITE: '1'
+        run: |
+          /usr/bin/python3 -c 'import cryptography; from cryptography.hazmat.backends.openssl.backend import backend; assert cryptography.__version__ == "3.4.8"; assert backend.openssl_version_text().startswith("OpenSSL 3.")'
+          /usr/bin/python3 bin/phase3-fresh-start.py rehearse --directory "$RUNNER_TEMP/phase3-bootstrap"

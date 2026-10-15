@@ -56,6 +56,19 @@ class Phase3PkiTlsProbe {
         Path directory = Paths.get(arguments[0]);
         char[] password = Files.readString(directory.resolve("store-password")).toCharArray();
         KeyStore keys = load(directory.resolve("server.p12"), "PKCS12", password);
+        KeyStore signer = load(directory.resolve("signer.p12"), "PKCS12", password);
+        if (!keys.isKeyEntry("aaf@aaf.osaaf.org") || keys.getKey("aaf@aaf.osaaf.org", password) == null
+                || keys.getCertificateChain("aaf@aaf.osaaf.org").length != 3
+                || !signer.isKeyEntry("aaf_intermediate_9") || signer.getKey("aaf_intermediate_9", password) == null
+                || signer.getCertificateChain("aaf_intermediate_9").length != 2) {
+            throw new IllegalStateException("Unexpected server/signer private-key entry or chain");
+        }
+        for (String store : new String[]{"server.p12", "signer.p12"}) {
+            boolean rejected = false;
+            try { load(directory.resolve(store), "PKCS12", "incorrect-password".toCharArray()); }
+            catch (IOException expected) { rejected = true; }
+            if (!rejected) throw new IllegalStateException("Incorrect store password accepted");
+        }
         KeyStore trust = load(directory.resolve("truststoreONAPall.jks"), "JKS", "changeit".toCharArray());
         KeyStore p12Trust = load(directory.resolve("truststoreONAP.p12"), "PKCS12", "changeit".toCharArray());
         if (!trust.isCertificateEntry("onaptestca") || !p12Trust.isCertificateEntry("onaptestca")) {

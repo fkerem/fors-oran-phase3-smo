@@ -103,6 +103,7 @@ def offline_rehearsal(directory, experiment):
               'readiness_image':READINESS_IMAGE,'readiness_source_sha256':hashlib.sha256(source).hexdigest(),
               'aaf_bootstrap_source_sha256':source_digest,
               'root_sha256':metadata['certificates']['root']['sha256'],
+              'pkcs12_packaging':metadata['pkcs12_packaging'],'runtime':metadata['runtime'],
               'offline_server_bootstrap':True,'live_agent_retrieval_tested':False,
               'isolated_java_tls_controls':True,
               'full_smo_tested':False,'network_during_bootstrap':'none'}

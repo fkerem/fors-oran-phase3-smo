@@ -103,6 +103,9 @@ setup; no completion marker is written. Keep logs and credentials private.
 Fresh-start receipts are under `/local/setup/phase3-smo/fresh-start/`.
 That directory also contains private keys and passwords: do not upload it.
 The existing one-hour operator stability gate still applies.
+Fresh startup uses explicit legacy-compatible PKCS12 packaging automatically.
+For a predeployment rehearsal failure, use only the reviewed recovery in
+README.md; do not replay infrastructure setup or delete generated PKI.
 Kubernetes credentials are in `~/.kube/config`.
 
 For local SMO UI access, use an SSH tunnel and loopback Kubernetes port

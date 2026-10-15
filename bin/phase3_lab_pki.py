@@ -6,10 +6,12 @@ import json
 import os
 from pathlib import Path
 import secrets
+import subprocess
+import cryptography
+from cryptography.hazmat.backends.openssl.backend import backend
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 CONFIG_IMAGE = 'nexus3.onap.org:10001/onap/aaf/aaf_config@sha256:681b0a23c5d99e9bf469f532a5e75afb5ff45cce78cb6d16579286fb6e05a3d5'
@@ -53,14 +55,43 @@ def certificate(subject, key, issuer, issuer_key, days, ca=False, path_length=No
     return cert.sign(issuer_key, hashes.SHA256())
 
 
-def p12_encryption(password):
-    # Java 11/older OpenSSL compatibility, not the newer PBESv2 packaging default.
-    if hasattr(serialization.PrivateFormat, 'PKCS12') and hasattr(serialization.PrivateFormat.PKCS12, 'encryption_builder'):
-        return (serialization.PrivateFormat.PKCS12.encryption_builder().kdf_rounds(50000)
-                .key_cert_algorithm(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC)
-                .hmac_hash(hashes.SHA1()).build(password))
-    # Ubuntu 22.04 cryptography 3.4 uses this PKCS12 packaging by default.
-    return serialization.BestAvailableEncryption(password)
+PKCS12_PACKAGING = {'key_pbe':'PBE-SHA1-3DES','certificate_pbe':'PBE-SHA1-3DES',
+                   'mac':'sha1','iterations':50000}
+
+
+def inspect_pkcs12(path, password_file):
+    result = subprocess.run(['openssl','pkcs12','-info','-noout','-in',str(path),
+                             '-passin','file:'+str(password_file)],capture_output=True,timeout=30)
+    info = result.stderr.decode(errors='replace')
+    if (result.returncode or 'MAC: sha1, Iteration 50000' not in info or
+            'Shrouded Keybag: pbeWithSHA1And3-KeyTripleDES-CBC, Iteration 50000' not in info or
+            'PKCS7 Encrypted data: pbeWithSHA1And3-KeyTripleDES-CBC, Iteration 50000' not in info):
+        raise ValueError('PKCS12 packaging differs from reviewed legacy-runtime contract')
+    return dict(PKCS12_PACKAGING)
+
+
+def export_pkcs12(alias, key, cert, chain, password, password_file):
+    # Explicit OpenSSL packaging works with both Jammy's cryptography 3.4 and
+    # newer Python libraries. Defaults (including the MAC) are never inherited.
+    # The encrypted key and public chain go through stdin, not a plaintext file.
+    pem = key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,
+                            serialization.BestAvailableEncryption(password))
+    pem += b''.join(c.public_bytes(serialization.Encoding.PEM) for c in [cert]+chain)
+    password_fd, writer = os.pipe()
+    try:
+        os.write(writer,password+b'\n')
+    finally:
+        os.close(writer)
+    try:
+        result = subprocess.run(['openssl','pkcs12','-export','-name',alias.decode(),
+            '-keypbe','PBE-SHA1-3DES','-certpbe','PBE-SHA1-3DES','-macalg','sha1','-iter','50000',
+            '-passin','file:'+str(password_file),'-passout','fd:'+str(password_fd)],
+            input=pem,capture_output=True,timeout=60,pass_fds=(password_fd,))
+    finally:
+        os.close(password_fd)
+    if result.returncode:
+        raise ValueError('Explicit PKCS12 export failed; no credential output printed')
+    return result.stdout
 
 
 def generate(directory, experiment):
@@ -82,9 +113,13 @@ def generate(directory, experiment):
     for filename, alias, key, cert, chain in [
             ('server.p12',b'aaf@aaf.osaaf.org',keys[2],leaf,[intermediate,root]),
             ('signer.p12',b'aaf_intermediate_9',keys[1],intermediate,[root])]:
-        private_write(directory/filename, pkcs12.serialize_key_and_certificates(alias,key,cert,chain,p12_encryption(password)))
+        private_write(directory/filename, export_pkcs12(alias,key,cert,chain,password,directory/'store-password'))
+        inspect_pkcs12(directory/filename,directory/'store-password')
     record = {'schema':1, 'experiment':experiment, 'baseline':'fresh-isolated-lab-pki',
               'issuer_dn_retained_for_cadi_compatibility':True, 'stock_truststore_password_retained':True,
+              'pkcs12_packaging':dict(PKCS12_PACKAGING),
+              'runtime':{'cryptography':cryptography.__version__,'cryptography_openssl':backend.openssl_version_text(),
+                         'openssl_cli':subprocess.check_output(['openssl','version'],text=True).strip()},
               'sans':SANS, 'certificates':{n:{'sha256':c.fingerprint(hashes.SHA256()).hex(),
                 'not_after':(c.not_valid_after_utc if hasattr(c,'not_valid_after_utc') else
                     c.not_valid_after.replace(tzinfo=dt.timezone.utc)).isoformat()}
