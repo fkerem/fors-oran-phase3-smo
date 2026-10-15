@@ -3,6 +3,8 @@ import fcntl
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -113,6 +115,28 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn('setup-kubespray.sh',body); self.assertIn('exit 0',body)
         self.assertIn('flock -n 9',driver)
         self.assertIn('phase3-fresh-start.py" prepare',(ROOT/'setup-oran-smo.sh').read_text())
+
+    @unittest.skipUnless(shutil.which('flock'),'Linux driver-lock integration runs in CI')
+    def test_driver_lock_inheritance_concurrency_and_failed_stage(self):
+        # Execute the actual driver with only its two fixed filesystem roots
+        # redirected into this disposable fixture; no real setup-lib is sourced.
+        home=Path(self.temp.name).resolve()/'driver'; (home/'bin').mkdir(parents=True)
+        driver=(ROOT/'setup-driver.sh').read_text().replace('/local/setup/',str(self.setup)+'/').replace('/local/logs/',str(self.logs)+'/')
+        (home/'setup-driver.sh').write_text(driver)
+        (home/'setup-lib.sh').write_text('OURDIR='+str(self.setup)+'\nHOSTNAME=node-0\n')
+        (home/'bin/phase3-predeployment-recovery.py').write_text(
+            'import os\nassert os.environ["PHASE3_RECOVERY_LOCK_FD"] == "9"\nos.fstat(9)\n')
+        for name,body in [('setup-oran-smo.sh','exit 7'),('setup-end.sh','exit 99')]:
+            path=home/name; path.write_text('#!/bin/bash\n'+body+'\n');path.chmod(0o700)
+        args=['bash',str(home/'setup-driver.sh'),'--resume-before-smo','--expected-slice',self.slice]
+        result=subprocess.run(args,capture_output=True,text=True)
+        self.assertEqual(7,result.returncode,result.stderr)
+        self.assertFalse((self.setup/'setup-driver-done').exists())
+        with (self.setup/'phase3-driver.lock').open('w') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            result=subprocess.run(args,capture_output=True,text=True)
+            self.assertEqual(1,result.returncode)
+            self.assertIn('driver lock',result.stderr)
 
 
 if __name__=='__main__':unittest.main()
