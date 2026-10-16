@@ -189,7 +189,7 @@ class BackendTests(unittest.TestCase):
 
     def test_window_accepts_only_stable_identity_trust_and_material(self):
         (self.path/'store-password').write_bytes(b'synthetic-only-hmac-key')
-        for scenario in ('stable','pod-change','material-change','tls-change'):
+        for scenario in ('stable','slow-startup','pod-change','material-change','tls-change'):
             directory=self.path/scenario;directory.mkdir()
             context=dict(self.context,slice_urn='fixture-slice',storage_preflight={
                 'paths':[{'path':p,'empty':True} for p in backend.STORAGE_PATHS]})
@@ -204,12 +204,14 @@ class BackendTests(unittest.TestCase):
             changed=dict(custody,encrypted_material_binding_sha256='second') if scenario=='material-change' else custody
             auth={'role':b'fixture-role','secret':b'fixture-secret'}
             tick=[0]
-            def sleep(seconds):tick[0]+=121
+            def sleep(seconds):tick[0]+=601 if scenario=='slow-startup' and tick[0]==0 else 121
             def get(kind):
                 return {'metadata':{'uid':'held'},'spec':{'suspend':True}} if kind.startswith('job/') else {'items':[]}
             with patch.object(gate.importlib.util,'module_from_spec',return_value=fake), \
                  patch.object(gate.importlib.util,'spec_from_file_location') as spec, \
-                 patch.object(gate,'snapshot',side_effect=[(record,({},)),(second,({},))]), \
+                 patch.object(gate,'snapshot',side_effect=(
+                     [gate.Pending('initializer running',record['identity']['pods'])] if scenario=='slow-startup' else [])
+                     +[(record,({},)),(second,({},))]), \
                  patch.object(gate,'operator_binding',return_value={'uid':'operator'}), \
                  patch.object(gate,'verify_pins'),patch.object(gate,'get',side_effect=get), \
                  patch.object(gate,'tls',side_effect=[('leaf',{},None),('changed' if scenario=='tls-change' else 'leaf',{},None)]), \
@@ -217,14 +219,44 @@ class BackendTests(unittest.TestCase):
                  patch.object(gate,'role_probe',return_value={'application_writes':False}), \
                  patch.object(gate.time,'monotonic',side_effect=lambda:tick[0]),patch.object(gate.time,'sleep',side_effect=sleep):
                 spec.return_value.loader.exec_module=lambda m:None
-                if scenario=='stable':
+                if scenario in ('stable','slow-startup'):
                     result=gate.wait_fresh(path,600)
                     self.assertTrue(result['backend_accepted']);self.assertEqual(120,result['restart_free_seconds'])
                     self.assertFalse(result.get('preload_authorized',False))
                     self.assertTrue((directory/'sms-backend-acceptance.json').is_file())
+                    self.assertEqual('handoff',result['timing']['phase'])
+                    if scenario=='slow-startup':self.assertGreater(result['timing']['elapsed_seconds'],600)
                 else:
                     with self.assertRaises(gate.Blocked):gate.wait_fresh(path,600)
                     self.assertFalse((directory/'sms-backend-acceptance.json').exists())
+
+
+class BudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.tick = 0
+        self.clock = patch.object(gate.time,'monotonic',side_effect=lambda:self.tick)
+        self.clock.start();self.addCleanup(self.clock.stop)
+
+    def test_startup_has_its_own_deadline_and_phase_diagnostic(self):
+        budget=gate.BootstrapBudget(1800,600)
+        self.tick=1799;budget.check()
+        self.tick=1800
+        with self.assertRaisesRegex(gate.Blocked,'startup timed out') as error:budget.ready()
+        self.assertEqual('startup',error.exception.timing['phase'])
+        self.assertEqual(1800,error.exception.timing['elapsed_seconds'])
+
+    def test_readiness_starts_handoff_once_without_resetting_it(self):
+        budget=gate.BootstrapBudget(1800,600)
+        self.tick=700;budget.ready()
+        self.tick=1200;budget.ready()
+        self.assertEqual(700,budget.handoff_start)
+        self.tick=1300
+        with self.assertRaisesRegex(gate.Blocked,'handoff timed out') as error:budget.check()
+        self.assertEqual(600,error.exception.timing['handoff_elapsed_seconds'])
+
+    def test_invalid_budgets_refused(self):
+        for startup,handoff in ((0,600),(-1,600),(1800,0),(1800,120)):
+            with self.assertRaises(gate.Blocked):gate.BootstrapBudget(startup,handoff)
 
 
 if __name__=='__main__':unittest.main()

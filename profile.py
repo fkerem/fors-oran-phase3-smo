@@ -92,6 +92,8 @@ a qualified guarded preload client after backend acceptance; retained contexts
 keep the stock preload safety hold. Full SMO readiness is checked separately.
 Fresh quorum clients use the allocation's public root before first startup;
 backend acceptance additionally requires durable shard and AppRole custody.
+SMS initializer readiness has its own bounded startup budget, separate from
+the backend handoff and restart-free observation budget.
 """)
 tour.Instructions(IG.Tour.MARKDOWN, """
 Wait for every startup service to show **Finished**. On node-0 inspect:

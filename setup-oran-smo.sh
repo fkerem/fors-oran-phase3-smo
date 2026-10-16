@@ -1,10 +1,12 @@
 #!/bin/bash
 SRC=$(cd -- "$(dirname -- "$0")" && pwd)
 resume_after_onap=0
+resume_after_onap_deploy=0
 case "$*" in
     "") ;;
     "--resume-after-onap") resume_after_onap=1 ;;
-    *) echo "Usage: $0 [--resume-after-onap]" >&2; exit 2 ;;
+    "--resume-after-onap-deploy") resume_after_onap=1; resume_after_onap_deploy=1 ;;
+    *) echo "Usage: $0 [--resume-after-onap|--resume-after-onap-deploy]" >&2; exit 2 ;;
 esac
 # shellcheck source=setup-lib.sh
 . "$SRC/setup-lib.sh"
@@ -119,7 +121,7 @@ cd "$work"
 python3 "$SRC/bin/phase3-fresh-start.py" verify --context "$PHASE3_FRESH_CONTEXT" --require-empty-onap
 helm -n onap deploy onap unpacked/onap --namespace onap --post-renderer "$renderer" \
     -f "$values/onap-override.yaml"
-PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/bin/phase3-sms-backend.py" wait-fresh --context "$PHASE3_FRESH_CONTEXT" --timeout 600
+PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/bin/phase3-sms-backend.py" wait-fresh --context "$PHASE3_FRESH_CONTEXT" --startup-timeout 1800 --timeout 600
 PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/bin/phase3-sms-preload.py" run-fresh --context "$PHASE3_FRESH_CONTEXT" --timeout 600
 test -n "$(kubectl -n onap get kafkas.kafka.strimzi.io -o name)" || {
     echo "ERROR: ONAP has not created its expected Kafka resource" >&2; exit 1;
@@ -130,6 +132,11 @@ else
     # No chart downloads, rendering, Strimzi reinstall or ONAP plugin replay on continuation.
     values="$work/dep/smo-install/helm-override/powder"
     export PHASE3_FRESH_CONTEXT="$work/fresh-start/context.json"
+    if [ "$resume_after_onap_deploy" -eq 1 ]; then
+        test -n "$PHASE3_RESUME_EXPECTED_SLICE"
+        python3 "$SRC/bin/phase3-onap-deploy-resume.py" \
+            --expected-slice "$PHASE3_RESUME_EXPECTED_SLICE" --apply
+    fi
     python3 "$SRC/bin/phase3-fresh-start.py" verify --context "$PHASE3_FRESH_CONTEXT"
     test -s "$work/fresh-start/onap-acceptance.json"
     renderer="$SRC/bin/phase3-fresh-renderer.py"

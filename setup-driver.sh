@@ -2,6 +2,7 @@
 SRC=$(cd -- "$(dirname -- "$0")" && pwd)
 resume_before_smo=0
 resume_after_onap=0
+resume_after_onap_deploy=0
 expected_slice=
 case "$#:$1" in
     0:) ;;
@@ -11,7 +12,10 @@ case "$#:$1" in
     3:--resume-after-onap)
         [ "$2" = '--expected-slice' ] && [ -n "$3" ] || exit 2
         resume_after_onap=1; expected_slice=$3 ;;
-    *) echo 'Usage: setup-driver.sh [--resume-before-smo|--resume-after-onap --expected-slice URN]' >&2; exit 2 ;;
+    3:--resume-after-onap-deploy)
+        [ "$2" = '--expected-slice' ] && [ -n "$3" ] || exit 2
+        resume_after_onap_deploy=1; expected_slice=$3 ;;
+    *) echo 'Usage: setup-driver.sh [--resume-before-smo|--resume-after-onap|--resume-after-onap-deploy --expected-slice URN]' >&2; exit 2 ;;
 esac
 umask 077
 # The allocation prepares /local/setup before invoking this driver.
@@ -31,6 +35,17 @@ run_stage() {
     echo "Starting $1"
     "$SRC/$1" 2>&1 | tee "/local/logs/$1.log"
 }
+if [ "$resume_after_onap_deploy" -eq 1 ]; then
+    [ "$(geni-get slice_urn)" = "$expected_slice" ] && [ "$HOSTNAME" = node-0 ] || {
+        echo 'Post-deployment continuation allocation mismatch' >&2; exit 1;
+    }
+    PHASE3_RECOVERY_LOCK_FD=9 PHASE3_RESUME_EXPECTED_SLICE="$expected_slice" \
+        "$SRC/setup-oran-smo.sh" --resume-after-onap-deploy 2>&1 | \
+        tee "/local/logs/phase3-post-deploy-resume-$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
+    run_stage setup-end.sh
+    touch "$OURDIR/setup-driver-done"
+    exit 0
+fi
 if [ "$resume_after_onap" -eq 1 ]; then
     [ "$(geni-get slice_urn)" = "$expected_slice" ] && [ "$HOSTNAME" = node-0 ] || {
         echo 'Post-ONAP continuation allocation mismatch' >&2; exit 1;

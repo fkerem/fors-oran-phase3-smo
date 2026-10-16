@@ -34,6 +34,38 @@ class Pending(Blocked):
         self.pod_uids = pod_uids or {}
 
 
+class BootstrapBudget:
+    """One startup deadline, then one handoff deadline; neither can reset."""
+    def __init__(self, startup_timeout, handoff_timeout):
+        if startup_timeout <= 0 or handoff_timeout <= 120:
+            raise Blocked('Startup budget must be positive and handoff budget must exceed 120 seconds')
+        self.start = time.monotonic()
+        self.handoff_start = None
+        self.startup_timeout = startup_timeout
+        self.handoff_timeout = handoff_timeout
+
+    def timing(self):
+        now = time.monotonic()
+        return {'phase': 'startup' if self.handoff_start is None else 'handoff',
+                'elapsed_seconds': round(now-self.start, 3),
+                'startup_timeout_seconds': self.startup_timeout,
+                'handoff_timeout_seconds': self.handoff_timeout,
+                'handoff_elapsed_seconds': None if self.handoff_start is None else round(now-self.handoff_start, 3)}
+
+    def check(self):
+        start = self.start if self.handoff_start is None else self.handoff_start
+        limit = self.startup_timeout if self.handoff_start is None else self.handoff_timeout
+        if time.monotonic()-start >= limit:
+            error = Blocked('Fresh backend '+self.timing()['phase']+' timed out; no reset or recovery attempted')
+            error.timing = self.timing()
+            raise error
+
+    def ready(self):
+        self.check()
+        if self.handoff_start is None:
+            self.handoff_start = time.monotonic()
+
+
 @contextmanager
 def driver_lock():
     import fcntl
@@ -272,7 +304,7 @@ def preserve(directory, record, objects):
     return {'directory':str(directory),'files_sha256':hashes}
 
 
-def wait_fresh(context_path, timeout):
+def wait_fresh(context_path, timeout, startup_timeout=1800, expected_identity=None):
     spec = importlib.util.spec_from_file_location('fresh_backend',ROOT/'bin/phase3-fresh-start.py')
     fresh = importlib.util.module_from_spec(spec); spec.loader.exec_module(fresh)
     context = fresh.verify_context(context_path)
@@ -285,9 +317,10 @@ def wait_fresh(context_path, timeout):
     attempt_path = receipt_path.parent/'sms-backend-first-use-attempt.json'
     if attempt_path.exists(): raise Blocked('First-use bootstrap was attempted; review its outcome before continuation')
     operator = operator_binding()
-    deadline = time.monotonic()+timeout
+    budget = BootstrapBudget(startup_timeout, timeout)
     identity = None; stable_start = None; accepted = None; observed_pods = {}
-    while time.monotonic() < deadline:
+    while True:
+        budget.check()
         try:
             record, objects = snapshot()
         except Pending as pending:
@@ -300,6 +333,8 @@ def wait_fresh(context_path, timeout):
         if any(record['identity']['pods'].get(name)!=uid for name,uid in observed_pods.items()):
             raise Blocked('Backend Pod changed before durable handoff')
         observed_pods.update(record['identity']['pods'])
+        if expected_identity is not None and record['identity'] != expected_identity:
+            raise Blocked('Backend differs from the reviewed continuation identity')
         if identity is not None and identity != record['identity']:
             raise Blocked('Backend Pod/storage identity changed during credential handoff')
         identity = record['identity']
@@ -322,11 +357,13 @@ def wait_fresh(context_path, timeout):
             if stable_start is not None:
                 raise Blocked('SMS TLS listener lost during acceptance observation')
             time.sleep(2); continue
+        budget.ready()
         if not record['vault']['initialized'] or record['vault']['sealed']:
             stable_start = None; time.sleep(2); continue
         # A normal first-use read lets the stock server persist its AppRole.
         # HTTP 500/empty data is never interpreted as target-state absence.
         if any(not m.get('present') for m in record['sms_backend_auth'].values()):
+            budget.check()
             private_write(attempt_path,json.dumps({'schema':1,'slice_urn':context['slice_urn'],
                 'identity':identity,'operation':'one-normal-first-use-GET','preload_authorized':False}).encode())
             connection = http.client.HTTPSConnection('aaf-sms.onap',10443,context=trust,timeout=10)
@@ -350,16 +387,17 @@ def wait_fresh(context_path, timeout):
               or auth_binding != accepted['backend_auth_binding_hmac']):
             raise Blocked('SMS TLS/recovery material changed during backend observation')
         if time.monotonic()-stable_start >= 120:
+            budget.check()
             if operator_binding() != operator:
                 raise Blocked('Operator identity changed during backend observation')
             role_probe(auth,identity['pods'][backend.VAULT+'-0'])
             record.update({'schema':1,'backend_accepted':True,'passed':True,'slice_urn':context['slice_urn'],
                 'root_sha256':context['root_sha256'],'images':backend.IMAGES,'restart_free_seconds':120,
-                'accepted_utc':datetime.now(timezone.utc).isoformat(),'operator':operator,**accepted})
+                'accepted_utc':datetime.now(timezone.utc).isoformat(),'operator':operator,
+                'timing':budget.timing(),**accepted})
             private_write(receipt_path,(json.dumps(record,indent=2)+'\n').encode())
             return record
         time.sleep(5)
-    raise Blocked('Fresh backend handoff timed out; no reset or recovery attempted')
 
 
 def verify_acceptance(context_path):
@@ -395,6 +433,7 @@ def main():
     rehearsal = sub.add_parser('rehearse'); rehearsal.add_argument('--directory',required=True)
     wait = sub.add_parser('wait-fresh'); wait.add_argument('--context',default=CONTEXT)
     wait.add_argument('--timeout',type=int,default=600)
+    wait.add_argument('--startup-timeout',type=int,default=1800)
     args = parser.parse_args(); os.umask(0o077)
     try:
         if args.operation == 'rehearse':
@@ -423,7 +462,7 @@ def main():
             return 2
         else:
             with driver_lock():
-                wait_fresh(args.context,args.timeout)
+                wait_fresh(args.context,args.timeout,args.startup_timeout)
         print('SMS backend isolated/fresh gate passed; preload and full SMO acceptance remain separate')
         return 0
     except (ValueError,OSError,RuntimeError,KeyError,subprocess.SubprocessError) as error:
@@ -435,6 +474,7 @@ def main():
                     'failure_type':type(error).__name__,
                     'reason':str(error) if isinstance(error,Blocked) else 'private-validation-error',
                     'live_repair_performed':False}
+                if hasattr(error,'timing'): failure['timing']=error.timing
                 private_write(parent/('sms-backend-blocked-%d.json'%time.time_ns()),json.dumps(failure,indent=2).encode())
         print('SMS backend gate blocked; inspect private metadata; no reset/recovery/preload performed')
         return 2

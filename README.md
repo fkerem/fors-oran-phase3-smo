@@ -497,6 +497,49 @@ This validates the allocation, runs the existing post-ONAP gate and remaining
 SMO/simulator stages, then normal end-stage/completion logic. Never create
 completion markers manually. Certificate fault tests remain separately gated.
 
+### SMS initializer timing and post-deployment continuation
+
+Fresh startup now gives SMS/Vault/quorum Pod and initializer readiness,
+including verified SMS TLS, a separate bounded 1,800-second startup budget.
+Only then does the 600-second backend handoff budget begin. The latter
+still requires initialized/unsealed Vault, durable validated quorum custody,
+the single journaled normal first-use GET, persisted AppRole credentials,
+and 120 restart-free seconds. Neither deadline resets on repeated polls.
+Timeout evidence identifies the phase and elapsed time; readiness alone
+never authorizes preload. This change is automatic in new allocations.
+
+A retained fresh allocation that stopped **only at this pre-first-use
+timeout** can be inspected without writes using the reviewed revision:
+
+```sh
+python3 bin/phase3-onap-deploy-resume.py --expected-slice CURRENT_SLICE_URN
+```
+
+After reviewing that audit, continue from the same reviewed checkout:
+
+```sh
+./setup-driver.sh --resume-after-onap-deploy --expected-slice CURRENT_SLICE_URN
+```
+
+This is distinct from `--resume-after-onap`, which requires ONAP acceptance
+already. The new mode retains the exclusive driver lock and checks the
+allocation/context, original timeout, currently accepted operator, private
+PKI, exact backend Pod/storage identities, verified TLS, durable shard
+custody, deployed Helm revisions and existing controller/Job specs. Before
+first use, Vault must already be unsealed, AppRole files must still be
+absent, and preload must be suspended with no owned Pod or attempt.
+
+The mode privately preserves and hashes original startup/backend logs and
+manifests before proceeding. A durable review binds the unchanged code,
+allocation and completed Jobs. It runs only backend acceptance, guarded
+preload, Kafka/ONAP acceptance, and the existing remaining SMO stages. It
+never runs infrastructure setup, the ONAP deployment plugin, PKI preparation,
+backend resets/restarts, or completed Jobs. Existing valid acceptance
+receipts are revalidated rather than replayed. An uncertain first-use or
+preload attempt, identity change, or unrelated failed Job stops continuation
+for separate review. Keep review/archive files private. Do not manually
+unsuspend preload or manufacture acceptance/completion markers.
+
 On node-0:
 
 ```sh
