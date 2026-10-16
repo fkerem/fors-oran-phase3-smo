@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from phase3_lab_pki import CONFIG_IMAGE, AGENT_IMAGE, trust_config
 import phase3_ves
+import phase3_sms
 
 ROOT = Path(__file__).resolve().parents[1]
 READINESS_IMAGE = 'nexus3.onap.org:10001/onap/oom/readiness@sha256:317c8a361ae73750f4d4a1b682c42b73de39083f73228dede31fd68b16c089db'
@@ -59,6 +60,12 @@ def overlay(resources, context):
         kind = resource.get('kind')
         meta = resource.get('metadata',{})
         name = meta.get('name','')
+        if kind == 'Deployment' and name == phase3_sms.NAME:
+            resource.update(phase3_sms.patch_deployment(resource, context))
+        elif kind == 'Service' and name == phase3_sms.SERVICE:
+            resource.update(phase3_sms.patch_service(resource))
+        elif kind == 'Job' and name == phase3_sms.JOB:
+            resource.update(phase3_sms.hold_preload(resource))
         if kind == 'Deployment' and name == phase3_ves.NAME:
             patched = phase3_ves.patch_deployment(resource, context)
             resource.clear()
@@ -86,6 +93,8 @@ def overlay(resources, context):
                             raise ValueError('Unreviewed DMAAP provisioning readiness arguments')
                         container['args'] = args + ['--timeout', '30']
                 elif image == CONFIG_IMAGE:
+                    if kind == 'Deployment' and name == phase3_sms.NAME and phase3_sms.crypto_initializer(container):
+                        continue  # Crypto-only SMS chain assembly, never the AAF server bootstrap.
                     if container not in spec.get('initContainers',[]) or container.get('command') != ['/bin/bash'] or container.get('args') != ['-c','cd /opt/app/aaf_config\nbin/agent.sh\n']:
                         raise ValueError('Unreviewed AAF server bootstrap contract')
                     container['command'] = ['/bin/bash','/phase3-helpers/phase3-aaf-bootstrap.sh']

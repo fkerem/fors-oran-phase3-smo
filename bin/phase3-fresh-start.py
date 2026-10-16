@@ -16,6 +16,7 @@ import time
 from phase3_fresh import READINESS_IMAGE, helper_config, select_storage_node
 from phase3_lab_pki import CONFIG_IMAGE, AGENT_IMAGE, generate, private_write, secret
 import phase3_ves
+import phase3_sms
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -80,6 +81,9 @@ def offline_rehearsal(directory, experiment):
     spec = importlib.util.spec_from_file_location('ves_rehearsal', ROOT/'bin/phase3-ves-rehearsal.py')
     ves_rehearsal = importlib.util.module_from_spec(spec); spec.loader.exec_module(ves_rehearsal)
     ves_result = ves_rehearsal.check(pki, directory, run, docker_prefix())
+    sms_spec = importlib.util.spec_from_file_location('sms_rehearsal', ROOT/'bin/phase3-sms-rehearsal.py')
+    sms_rehearsal = importlib.util.module_from_spec(sms_spec); sms_spec.loader.exec_module(sms_rehearsal)
+    sms_result = sms_rehearsal.check(directory/'sms-isolated', run, docker_prefix())
     run(docker_prefix()+['run','--rm','--network','none',
         '--mount','type=bind,src='+str(pki)+',dst=/phase3-pki,readonly',
         '--mount','type=bind,src='+str(ROOT/'tools/Phase3PkiTlsProbe.java')+',dst=/checks/Phase3PkiTlsProbe.java,readonly',
@@ -111,6 +115,7 @@ def offline_rehearsal(directory, experiment):
               'offline_server_bootstrap':True,'live_agent_retrieval_tested':False,
               'isolated_java_tls_controls':True,
               'ves_rehearsal':ves_result,
+              'sms_rehearsal':sms_result,
               'full_smo_tested':False,'network_during_bootstrap':'none'}
     private_write(directory/'rehearsal.json',(json.dumps(record,indent=2)+'\n').encode())
     return record
@@ -173,6 +178,7 @@ def prepare(directory, slice_urn):
         kubectl('create','-f','-',data=json.dumps(helper_config(namespace)).encode())
     kubectl('create','-f','-',data=json.dumps(secret(pki,'onap',context['secret_name'])).encode())
     kubectl('create','-f','-',data=json.dumps(phase3_ves.config(context)).encode())
+    kubectl('create','-f','-',data=json.dumps(phase3_sms.config(context)).encode())
     context['files_sha256'] = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pki.iterdir() if p.is_file()}
     private_write(directory/'context.json',(json.dumps(context,indent=2)+'\n').encode())
     return context
@@ -217,6 +223,10 @@ def onap_errors(resources):
     for r in resources:
         spec=r.get('spec',{}); status=r.get('status',{}); kind=r['kind']; name=r['metadata']['name']
         if kind=='Job':
+            if name == phase3_sms.JOB and spec.get('suspend') is True:
+                raise ValueError('SMS preload is safely held: explicit write-safety review is required; do not unsuspend stock preload')
+            if name == phase3_sms.JOB and r['metadata'].get('annotations', {}).get('phase3.onap.org/preload-gate'):
+                raise ValueError('SMS preload write-safety acceptance is unavailable; manual unsuspension is not acceptance')
             conditions=status.get('conditions',[])
             if any(c['type']=='Failed' and c['status']=='True' for c in conditions):
                 raise ValueError('ONAP Job failed; no automatic retry: '+name)

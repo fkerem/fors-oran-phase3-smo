@@ -1,5 +1,50 @@
 # POWDER Phase 3 SMO profile
 
+## SMS safety gate (current stopping point)
+
+New profiles repair SMS's served public chain using this allocation's existing
+root and intermediate. A crypto-only, digest-pinned initializer validates the
+issued leaf's chain, server purpose, validity and `aaf-sms.onap` hostname before
+replacing any appended historical intermediate. It receives public trust only;
+it never invokes AAF or mounts a signing key. The SMS server image is also
+digest-pinned. A server-only role label narrows `aaf-sms` so preload Pods can
+never become its TCP/10443 endpoints. The immutable Deployment selector,
+databases, PVCs and packaged historical certificate Secret are not changed.
+
+**SMS preload is deliberately suspended on new installs. Full SMO startup is
+not yet unattended.** The pinned preload binary retries writes, can exit zero
+after write failures, continues to secret writes after an `existing domain`
+response, and falls back to insecure TLS when its CA file cannot be read.
+A log-only kill wrapper is not a request-level interlock and is not accepted
+as safe cleanup/replay control. Do not manually unsuspend the stock Job or
+treat a Job Complete condition alone as application success. ONAP acceptance
+refuses this held gate (including a manually unsuspended/completed Job).
+This explicitly blocks DMAAP/remaining SMO continuation; no completion marker
+is written. A reviewed no-retry writer with explicit TLS, pre-existing-object
+refusal, durable attempt identity and private postcondition comparison is
+separate work requiring review. Existing/uncertain partial effects must stop
+for review, not missing-only reconciliation, overwrite or database reset.
+
+`python3 bin/phase3-sms-rehearsal.py --directory NEW_PRIVATE_DIRECTORY` runs
+the exact-image chain controls and characterizes the preload binary against
+synthetic data. Two containers share only a `--network none` container's
+loopback; no ports are published and no live AAF/SMS request is sent. Both
+Python crypto stacks run these controls in CI and fresh preparation. A passing
+rehearsal explicitly records `live_preload_authorized: false`.
+
+For the existing held allocation only, `bin/phase3-sms-repair.py --audit` and
+`--apply` accept `--expected-slice`, `--rehearsal RESULT_JSON`, and
+`--review-file NEW_PRIVATE_PATH`. This distinct repair never replays or
+replaces a Job and does not loosen the old main-never-ran refusal. Audit binds
+UID/resource versions, templates, current PKI, rehearsal and protected storage
+identities. Apply expires after 30 minutes, holds the driver lock, preserves
+private logs/manifests with hashes, rolls only the SMS server, verifies two
+minutes of restart-free readiness and root-only hostname TLS, then narrows
+the Service. Normal AAF leaf retrieval on the new Pod is recorded; the CA is
+not rotated. Read-only expected-domain metadata is inspected afterward, but
+an empty list or backend HTTP error is **not** proof of absence. Any uncertainty
+keeps preload held. Failure stops without an automatic rollback/retry.
+
 ## New experiments: fresh-start compatibility baseline
 
 **Update/Pull this repository-backed profile in POWDER and compare the full
