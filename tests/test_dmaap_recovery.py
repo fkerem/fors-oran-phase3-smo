@@ -82,6 +82,23 @@ class ProofTests(unittest.TestCase):
         result['spec']['template']['spec']['containers'][0]['args']=['extra']
         with self.assertRaises(ValueError):recovery.job_contract(result)
 
+    def test_job_and_admitted_pod_use_dmaap_alias_not_sms_default(self):
+        job=recovery.replacement(self.job)
+        spec=job['spec']['template']['spec']
+        spec['serviceAccount']=dmaap.SA
+        spec.update(dnsPolicy='ClusterFirst',schedulerName='default-scheduler',
+                    terminationGracePeriodSeconds=30,enableServiceLinks=True)
+        recovery.job_contract(job)
+        pod=copy.deepcopy(spec);pod.update(nodeName='node-2',priority=0,preemptionPolicy='PreemptLowerPriority')
+        self.assertEqual(recovery.normalized_pod(spec),recovery.normalized_pod(pod,admitted=True))
+        pod['serviceAccount']='phase3-sms-preload'
+        with self.assertRaisesRegex(ValueError,'alias changed'):recovery.normalized_pod(pod,admitted=True)
+
+    def test_account_name_and_other_mounts_still_strict(self):
+        for field,value in (('serviceAccountName','other'),('volumes',[])):
+            job=recovery.replacement(self.job);job['spec']['template']['spec'][field]=value
+            with self.assertRaises(ValueError):recovery.job_contract(job)
+
 
 class ReviewTests(unittest.TestCase):
     def setUp(self):

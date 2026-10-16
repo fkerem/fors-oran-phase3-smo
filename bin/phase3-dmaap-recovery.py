@@ -311,6 +311,14 @@ def replace_original(path,binding,objects,archive):
     return new
 
 
+def normalized_pod(spec,admitted=False):
+    actual=copy.deepcopy(spec)
+    alias=actual.pop('serviceAccount',None)
+    if alias is not None and alias!=dmaap.SA:
+        raise dmaap.Blocked('DMAAP ServiceAccount alias changed')
+    return preload.normalized_pod(actual,admitted=admitted)
+
+
 def job_contract(job):
     source={'kind':'Job','metadata':{'name':dmaap.JOB},'spec':{'template':{'metadata':{'labels':{}},'spec':{
         'containers':[{'name':'dmaap-provisioning-job','image':dmaap.STOCK_IMAGE}]}}}}
@@ -329,10 +337,8 @@ def job_contract(job):
     if job['spec'].get('completionMode','NonIndexed')!='NonIndexed' or job['spec'].get('manualSelector',False):
         raise dmaap.Blocked('Unreviewed guarded Job selection/completion policy')
     # Reuse only Kubernetes-default normalization, not the SMS Job guard.
-    actual=copy.deepcopy(job['spec']['template']['spec'])
-    if actual.get('serviceAccount')==dmaap.SA:actual.pop('serviceAccount')
     expected_pod=expected['spec']['template']['spec']
-    if preload.normalized_pod(actual)!=expected_pod:raise dmaap.Blocked('Guarded DMAAP Pod template changed')
+    if normalized_pod(job['spec']['template']['spec'])!=expected_pod:raise dmaap.Blocked('Guarded DMAAP Pod template changed')
     return job
 
 
@@ -405,13 +411,8 @@ def postconditions(path,armed,key,record):
     if (len(status)!=1 or status[0]['restartCount']!=0 or status[0]['state'].get('terminated',{}).get('exitCode')!=0
             or not status[0]['imageID'].endswith(dmaap.IMAGE.split('@')[1])):
         raise dmaap.Blocked('DMAAP runtime identity or successful execution changed')
-    admitted=copy.deepcopy(pods[0]['spec']);admitted.pop('nodeName',None)
-    if admitted.get('serviceAccount')==dmaap.SA:admitted.pop('serviceAccount')
-    if preload.normalized_pod(admitted,admitted=True)!=job['spec']['template']['spec']:
-        # Normalize the Job's API defaults too, while retaining every reviewed
-        # mount, identity, image, argument and security setting.
-        if preload.normalized_pod(admitted,admitted=True)!=preload.normalized_pod(job['spec']['template']['spec']):
-            raise dmaap.Blocked('Admitted DMAAP Pod differs from reviewed Job')
+    if normalized_pod(pods[0]['spec'],admitted=True)!=normalized_pod(job['spec']['template']['spec']):
+        raise dmaap.Blocked('Admitted DMAAP Pod differs from reviewed Job')
     dmaap.verify_values(plan,dmaap.Transport(Path(context['pki_directory'])/'root.cer',armed['binding']['server']['address'],credential))
     return state
 
