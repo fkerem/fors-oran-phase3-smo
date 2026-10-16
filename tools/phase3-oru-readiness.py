@@ -313,6 +313,11 @@ def apply(gate,path,expected_slice,review_path,allow_restarts):
     current=review_binding(gate,path,expected_slice,allow_restarts)
     check_history_binding(json.loads(json.dumps(approved['binding'])),json.loads(json.dumps(current)))
     archive=preserve(path,gate,oru_pod(),'before')
+    latest=oru_pod()
+    contract.check_pod(latest,current['pod_uid'],unattempted=True,readiness_restarts=current['readiness_restarts'])
+    if (contract.sha(latest['spec'])!=current['pod_spec_sha256']
+            or get('serviceaccount',contract.SA,namespace='nonrtric')['metadata']['uid']!=current['serviceaccount_uid']):
+        raise contract.Blocked('O-RU identity changed immediately before grant')
     write(latch,{'schema':1,'review_file':str(review_path.resolve()),'review_sha256':digest(review_path),
                  'binding_sha256':contract.sha(approved['binding']),'private_archive':archive})
     created_objects={}
@@ -340,6 +345,8 @@ def verify(gate,path,expected_slice):
     verify_archive(binding['waiter_stop_archive'])
     if binding['code_sha256']!={p.name:digest(p) for p in (Path(__file__),ROOT/'tools/phase3_oru_readiness.py')}:
         raise contract.Blocked('Reviewed O-RU coordinator code changed')
+    if qualification(gate,ROOT/'synthetic-qualification.json')!=binding['qualification_sha256']:
+        raise contract.Blocked('Reviewed helper qualification changed')
     if protected(gate,path,expected_slice)!=binding['protected'] or targets()!=binding['targets']:
         raise contract.Blocked('O-RU protected acceptance changed')
     if get('serviceaccount',contract.SA,namespace='nonrtric')['metadata']['uid']!=binding['serviceaccount_uid']:
@@ -428,7 +435,7 @@ def verify_fresh(path,bind_identity=False):
         raise contract.Blocked('Fresh readiness RBAC changed')
     pod=oru_pod();states=contract.check_pod(pod)
     statuses=pod['status'].get('containerStatuses',[])
-    if (not statuses or not all(s.get('ready') for s in statuses)
+    if (not statuses or not all(s.get('ready') for s in statuses) or any(s.get('restartCount') or s.get('lastState') for s in statuses)
             or not all(s.get('terminated',{}).get('exitCode')==0 for s in states.values())):
         raise contract.Blocked('Fresh O-RU app is not Ready')
     sa=get('serviceaccount',contract.SA,namespace='nonrtric');identity=path.parent/(PREFIX+'fresh-identity.json')
@@ -477,6 +484,12 @@ def main():
                 'reason':str(error) if isinstance(error,contract.Blocked) else 'private-validation-error',
                 'provisioning_replayed':False,'certificate_fault_cases_started':False})
             write(args.context.parent/(name+'.private-trace.json'),{'traceback':traceback.format_exc()})
+            if args.action in ('apply','continue') and 'gate' in locals():
+                try:
+                    archive=preserve(args.context,gate,oru_pod(),'failed')
+                    write(args.context.parent/(name+'.preservation.json'),archive)
+                except Exception:
+                    pass  # Never replace the original refusal or retry an application.
         print('O-RU readiness gate blocked; private evidence retained; no reset/replay');return 2
 
 

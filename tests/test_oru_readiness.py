@@ -189,10 +189,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('identity acceptance missing',source)
 
     def test_partial_or_lost_create_response_keeps_latch_and_never_accepts(self):
-        binding={'readiness_history':[],'proposed_rbac':policy.resources(targets())}
+        p=pod();p['status']['initContainerStatuses'][0]['state']={'running':{'startedAt':'synthetic'}}
+        p['status']['initContainerStatuses'][1]['state']={'waiting':{'reason':'PodInitializing'}}
+        binding={'readiness_history':[],'proposed_rbac':policy.resources(targets()),'pod_uid':'synthetic-pod',
+                 'pod_spec_sha256':policy.sha(p['spec']),'serviceaccount_uid':'synthetic-sa','readiness_restarts':0}
         gate.write(self.review,{'schema':1,'created_utc':datetime.now(timezone.utc).isoformat(),'binding':binding})
         with patch.object(gate,'review_binding',return_value=copy.deepcopy(binding)), \
-             patch.object(gate,'preserve',return_value={'synthetic':True}),patch.object(gate,'oru_pod',return_value=pod()), \
+             patch.object(gate,'preserve',return_value={'synthetic':True}),patch.object(gate,'oru_pod',return_value=p), \
+             patch.object(gate,'get',return_value={'metadata':{'uid':'synthetic-sa'}}), \
              patch.object(gate,'command',side_effect=TimeoutError('lost response')) as create:
             with self.assertRaises(TimeoutError):gate.apply(None,self.path,'slice',self.review,False)
             create.assert_called_once()
