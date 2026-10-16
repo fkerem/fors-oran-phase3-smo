@@ -66,6 +66,16 @@ def execute(pod, container, args):
     return command(['kubectl', '-n', 'onap', 'exec', pod, '-c', container, '--']+args)
 
 
+def vault_observation(pod):
+    result = subprocess.run(['kubectl','-n','onap','exec',pod,'-c','aaf-sms-vault','--',
+        'vault','status','-address=http://127.0.0.1:8200','-format=json'],capture_output=True,timeout=45)
+    if result.returncode not in (0,2):
+        if result.returncode == 1 and b'connection refused' in result.stderr.lower():
+            raise Pending('Vault listener is not available yet')
+        raise Blocked('Vault status observation failed')
+    return backend.vault_status(json.loads(result.stdout))
+
+
 def file_metadata(pod, container, paths):
     result = {}
     for key, path in paths.items():
@@ -101,9 +111,11 @@ def snapshot():
         raise Blocked('Backend process restarted before acceptance')
     if not all(ready(p) for p in objects):
         raise Pending('Backend Pods are not ready yet',pod_uids)
-    state = json.loads(execute(vault['metadata']['name'], 'aaf-sms-vault',
-        ['sh','-c','vault status -address=http://127.0.0.1:8200 -format=json; r=$?; test "$r" = 0 || test "$r" = 2']))
-    state = backend.vault_status(state)
+    try:
+        state = vault_observation(vault['metadata']['name'])
+    except Pending as pending:
+        pending.pod_uids = pod_uids
+        raise
     auth_paths = {'role': '/sms/auth/role', 'secret': '/sms/auth/secret'}
     entries = []
     for pod in quorum:
@@ -279,6 +291,8 @@ def wait_fresh(context_path, timeout):
         try:
             record, objects = snapshot()
         except Pending as pending:
+            if stable_start is not None:
+                raise Blocked('Backend lost readiness during acceptance observation')
             if any(name not in pending.pod_uids or pending.pod_uids[name]!=uid for name,uid in observed_pods.items()):
                 raise Blocked('Backend Pod changed before durable handoff')
             observed_pods.update(pending.pod_uids)
@@ -302,7 +316,12 @@ def wait_fresh(context_path, timeout):
                 or any(any(o.get('uid')==job['metadata']['uid'] for o in p['metadata'].get('ownerReferences',[]))
                        for p in get('pods')['items'])):
             raise Blocked('Stock SMS preload is not safely held')
-        leaf, service, trust = tls(context, objects[0])
+        try:
+            leaf, service, trust = tls(context, objects[0])
+        except (ConnectionRefusedError,TimeoutError):
+            if stable_start is not None:
+                raise Blocked('SMS TLS listener lost during acceptance observation')
+            time.sleep(2); continue
         if not record['vault']['initialized'] or record['vault']['sealed']:
             stable_start = None; time.sleep(2); continue
         # A normal first-use read lets the stock server persist its AppRole.
@@ -347,6 +366,8 @@ def verify_acceptance(context_path):
     context = json.loads(Path(context_path).read_text())
     if context.get('sms_backend_contract') != 1:
         return None  # Retained contexts keep their original, separate gates.
+    if command(['geni-get','slice_urn']).decode().strip() != context['slice_urn']:
+        raise Blocked('Backend acceptance allocation changed')
     receipt = json.loads((Path(context_path).parent/'sms-backend-acceptance.json').read_text())
     if (receipt.get('passed') is not True or receipt.get('backend_accepted') is not True
             or receipt.get('slice_urn') != context['slice_urn'] or receipt.get('root_sha256') != context['root_sha256']

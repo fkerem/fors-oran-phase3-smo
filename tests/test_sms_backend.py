@@ -111,6 +111,13 @@ class BackendTests(unittest.TestCase):
         for change in ({'version':'1.4.0'},{'n':1},{'t':1}):
             with self.assertRaises(ValueError):backend.vault_status(dict(sealed,**change))
 
+    def test_readonly_listener_polling_never_masks_status_or_trust_errors(self):
+        from types import SimpleNamespace
+        with patch.object(gate.subprocess,'run',return_value=SimpleNamespace(returncode=1,stderr=b'connection refused')):
+            with self.assertRaises(gate.Pending):gate.vault_observation('fixture')
+        with patch.object(gate.subprocess,'run',return_value=SimpleNamespace(returncode=1,stderr=b'unexpected error')):
+            with self.assertRaises(gate.Blocked):gate.vault_observation('fixture')
+
     def test_missing_empty_and_incomplete_custody_refused_before_crypto(self):
         with patch.object(backend,'decrypt_shard') as decrypt:
             for entries in ([],[{'files':{}}]*3,[{'files':{'id':b'x','pbkey':b'x','prkey':b'x','shard':b''}}]*3):

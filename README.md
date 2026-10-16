@@ -32,6 +32,8 @@ Normal first-use SMS bootstrap is limited to one journaled GET; no domain or
 secret preload POST is made. A failure never repeats that bootstrap request,
 resets data, or fabricates completion. Authentication tokens are short-lived,
 kept private and revoked after metadata checks; no root privileges are added.
+The internal Vault metadata session retains the chart's existing HTTP
+transport; this compatibility gate is not backend transport hardening.
 The stock quorum binary retains its normal polling; a failed gate stops setup,
 not those running containers, and is not an exactly-once execution guarantee.
 
