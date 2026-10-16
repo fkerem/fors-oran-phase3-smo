@@ -126,6 +126,13 @@ the fresh-only SMS preload gate in README.md. Job Complete alone is not
 acceptance; do not force a Finished/completion marker. After publication,
 use the refreshed revision for a separate new experiment.
 
+New contexts also hold DMAAP provisioning until current SMS acceptance.
+The guarded DMAAP client verifies the allocation public root and hostname,
+records intent before each of at most six client POST attempts, and requires
+independent field/relationship readback. No write retries or reconciliation
+are permitted. A retained stock Job needs the separate reviewed recovery in
+README.md; do not update its curl trust in place or replay it.
+
 For local SMO UI access, use an SSH tunnel and loopback Kubernetes port
 forward as documented in README.md. Read chart-provided credentials only on
 the allocated node; do not paste their values into evidence or GitHub.

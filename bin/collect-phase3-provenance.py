@@ -114,6 +114,8 @@ def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
     errors = assess(nodes, workloads, pods, pvcs, releases, services, kafkas, jobs)
     preload_verified = False
     preload_current = None
+    dmaap_verified = False
+    dmaap_current = None
     try:
         if Path(context_path).is_file():
             context = json.loads(Path(context_path).read_text())
@@ -127,12 +129,22 @@ def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
     except (OSError, ValueError, RuntimeError, KeyError):
         preload_current = {'verified': False}
         errors.append('SMS preload current verification is not established')
+    try:
+        if Path(context_path).is_file():
+            context=json.loads(Path(context_path).read_text())
+            if context.get('dmaap_contract')==1 or (Path(context_path).parent/'dmaap-transition.json').exists():
+                spec=importlib.util.spec_from_file_location('provenance_dmaap',ROOT/'bin/phase3-dmaap-recovery.py')
+                gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
+                if gate.verify_acceptance(context_path) is None:raise ValueError('DMAAP acceptance missing')
+                dmaap_verified=True;dmaap_current={'verified':True}
+    except (OSError,ValueError,RuntimeError,KeyError):
+        dmaap_current={'verified':False};errors.append('DMAAP current verification is not established')
     onap = [r for r in raw_workloads+raw_jobs if r['metadata'].get('namespace') == 'onap']
     if any(r['kind'] == 'Job' and r['metadata']['name'] == 'onap-aaf-sms-preload' for r in onap):
         spec = importlib.util.spec_from_file_location('provenance_fresh', ROOT/'bin/phase3-fresh-start.py')
         fresh = importlib.util.module_from_spec(spec); spec.loader.exec_module(fresh)
         try:
-            errors.extend(fresh.onap_errors(onap, preload_verified=preload_verified))
+            errors.extend(fresh.onap_errors(onap, preload_verified=preload_verified,dmaap_verified=dmaap_verified))
         except (ValueError, RuntimeError, KeyError):
             errors.append('SMS preload/ONAP Job acceptance is not established')
     return {"collected_utc": datetime.now(timezone.utc).isoformat(),
@@ -143,6 +155,7 @@ def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
             "helm_releases": releases, "services": services,
             "kafkas": kafkas, "jobs": jobs, "operator_compatibility": operator_compatibility,
             "sms_preload_current": preload_current,
+            "dmaap_current":dmaap_current,
             "source_dependencies": dependencies, "chart_compatibility": compatibility,
             "readiness_errors": errors}
 

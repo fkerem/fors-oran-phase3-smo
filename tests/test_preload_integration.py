@@ -101,7 +101,7 @@ class PreloadIntegrationTests(unittest.TestCase):
             'root_sha256': 'a'*64, 'secret_name': 'synthetic-pki', 'files_sha256': {},
             'sms_backend_contract': 1, 'sms_preload_contract': 1}
         self.receipt = {'root_sha256': 'a'*64, 'sms_backend_rehearsal': {},
-                        'sms_preload_rehearsal': {'passed': True, 'fixture': True}}
+                        'sms_preload_rehearsal': {'passed': True, 'fixture': True},'dmaap_rehearsal':{}}
         self.write_context()
 
     def write_context(self):
@@ -167,6 +167,7 @@ class PreloadIntegrationTests(unittest.TestCase):
                 patch.object(fresh, 'cluster_nodes', return_value=self.nodes), \
                 patch.object(fresh, 'storage_inspection', return_value={'paths': []}), \
                 patch.object(fresh, 'offline_rehearsal', return_value=self.receipt), \
+                patch('phase3_dmaap.require_qualification'), \
                 patch.object(fresh, 'assert_empty_onap'), patch.object(fresh, 'kubectl', side_effect=kubectl), \
                 patch.object(fresh, 'secret', return_value={'kind': 'Secret'}), patch.object(fresh, 'private_write'):
             result = fresh.prepare(self.path, self.context['slice_urn'])
@@ -230,6 +231,7 @@ class PreloadIntegrationTests(unittest.TestCase):
         destination = self.path/'offline'
         preload_rehearsal = SimpleNamespace(check=Mock(return_value={'qualified': True}))
         fixtures = {'phase3-readiness-wrapper.py': SimpleNamespace(patched_source=Mock())}
+        fixtures['phase3-dmaap-rehearsal.py']=SimpleNamespace(check=Mock(return_value={'passed':True}))
         for filename in ('phase3-ves-rehearsal.py', 'phase3-sms-rehearsal.py', 'phase3-sms-backend-rehearsal.py'):
             fixtures[filename] = SimpleNamespace(check=Mock(return_value={'passed': True}))
         fixtures['phase3-sms-preload-rehearsal.py'] = preload_rehearsal
@@ -320,7 +322,8 @@ class PreloadIntegrationTests(unittest.TestCase):
         for answers in ([ValueError('stale preload')], [{'accepted': True}, ValueError('stale preload')]):
             backend_gate = SimpleNamespace(verify_acceptance=Mock(return_value={}))
             preload_gate = SimpleNamespace(verify_acceptance=Mock(side_effect=answers))
-            with gate_modules({'phase3-sms-backend.py': backend_gate, 'phase3-sms-preload.py': preload_gate}), \
+            with gate_modules({'phase3-sms-backend.py': backend_gate, 'phase3-sms-preload.py': preload_gate,
+                               'phase3-dmaap-recovery.py':SimpleNamespace(verify_acceptance=Mock(return_value=None))}), \
                     patch.object(fresh, 'verify_context', return_value=self.context), \
                     patch.object(fresh, 'kubectl', return_value=b'{"items":[]}') as read, \
                     patch.object(fresh, 'onap_errors', return_value=['pending']) as errors, \
@@ -329,7 +332,7 @@ class PreloadIntegrationTests(unittest.TestCase):
             if len(answers) == 1:
                 read.assert_not_called()
             else:
-                errors.assert_called_once_with([], preload_verified=True)
+                errors.assert_called_once_with([], preload_verified=True,dmaap_verified=False)
 
     def test_resume_requires_current_preload_before_onap_completion(self):
         preload_gate = SimpleNamespace(verify_acceptance=Mock(side_effect=ValueError('stale preload')))

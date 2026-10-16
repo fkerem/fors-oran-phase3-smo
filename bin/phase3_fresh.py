@@ -58,6 +58,8 @@ def overlay(resources, context):
     if 'sms_preload_contract' in context and (
             type(context['sms_preload_contract']) is not int or context['sms_preload_contract'] != 1):
         raise ValueError('Unreviewed SMS preload contract')
+    if 'dmaap_contract' in context and (type(context['dmaap_contract']) is not int or context['dmaap_contract']!=1):
+        raise ValueError('Unreviewed DMAAP contract')
     resources = copy.deepcopy(resources)
     preload = None
     if context.get('sms_preload_contract') == 1:
@@ -78,6 +80,9 @@ def overlay(resources, context):
             resource.update(phase3_sms.patch_service(resource))
         elif kind == 'Job' and name == phase3_sms.JOB:
             resource.update(preload.patch_job(resource, context) if preload else phase3_sms.hold_preload(resource))
+        if context.get('dmaap_contract')==1 and kind=='Job' and name=='onap-dmaap-bc-dmaap-provisioning':
+            import phase3_dmaap
+            resource.update(phase3_dmaap.patch_job(resource))
         if kind == 'Deployment' and name == phase3_ves.NAME:
             patched = phase3_ves.patch_deployment(resource, context)
             resource.clear()
@@ -91,6 +96,9 @@ def overlay(resources, context):
         if spec is not None:
             helper_name = helper_config(meta.get('namespace','onap'))['metadata']['name']
             for container in spec.get('initContainers',[])+spec.get('containers',[]):
+                if context.get('dmaap_contract')==1:
+                    import phase3_dmaap
+                    if phase3_dmaap.is_client(container):continue
                 if preload is not None and preload.is_client(container):
                     continue  # The exact reviewed preload client owns its entry point.
                 image = container.get('image','')

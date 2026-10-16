@@ -125,6 +125,61 @@ not rotated. Read-only expected-domain metadata is inspected afterward, but
 an empty list or backend HTTP error is **not** proof of absence. Any uncertainty
 keeps preload held. Failure stops without an automatic rollback/retry.
 
+## DMAAP guarded provisioning and retained-allocation recovery
+
+New contexts use `dmaap_contract=1`. The chart's provisioning Job is rendered
+suspended with a digest-pinned Python client, `restartPolicy: Never`, zero
+backoff, a 600-second deadline and distinct labels that do not match the
+DMAAP server Service. It activates only after current SMS backend and guarded
+preload acceptance. An isolated exact-image rehearsal is mandatory before
+deployment; its generated PKI, database and logs remain private.
+
+The allowlist is the six pinned input files: one `dmaap`, one location, one
+MR cluster, and three topics with five supplied client relationships. All
+eight collection catalogs must be empty and the singleton must match the
+qualified first-install defaults. There is no partial reconciliation.
+Durable intent and a Kubernetes resourceVersion CAS precede every request.
+There are at most **six client POST attempts**, not an exactly-once server
+guarantee or a bound on downstream AAF/MR writes. Redirects, conflicts,
+malformed/lost responses, timeouts, changed inputs and uncertain attempts
+stop without retry, overwrite, rollback or replay. Supplied fields and
+relationships are independently read back; Job Complete is insufficient.
+The 2.0.8 Topic response's boolean-to-string transaction flag mapping is
+explicitly version-qualified, not a general type-coercion allowance.
+
+For an already-running stock Job, the older `phase3-onap-recovery.py` keeps
+its **main-never-ran** refusal. A separate recovery requires complete logs
+from process start, the exact image/script/process, zero restarts, only
+failed pre-write readiness GETs, no configuration override, authoritative
+fresh catalogs, current SMS receipts, and the original protected inventory.
+Never fix its curl trust in place: that would enable its unbounded writer.
+From a separately staged, tested checkout on node-0:
+
+```sh
+python3 bin/phase3-dmaap-rehearsal.py --directory /var/tmp/UNIQUE-PRIVATE-QUALIFICATION
+python3 bin/phase3-dmaap-recovery.py --audit --expected-slice "$slice" \
+  --qualification /var/tmp/UNIQUE-PRIVATE-QUALIFICATION/result.json \
+  --review-file /local/setup/phase3-smo/fresh-start/UNIQUE-dmaap-review.json
+# Review the private metadata and original evidence before this command.
+python3 bin/phase3-dmaap-recovery.py --apply --expected-slice "$slice" \
+  --qualification /var/tmp/UNIQUE-PRIVATE-QUALIFICATION/result.json \
+  --review-file /local/setup/phase3-smo/fresh-start/UNIQUE-dmaap-review.json
+./setup-driver.sh --resume-after-dmaap --expected-slice "$slice" \
+  --review-file /local/setup/phase3-smo/fresh-start/UNIQUE-dmaap-review.json
+```
+
+Replace the placeholders with new private paths; do not reuse an attempt.
+The review expires after 30 minutes. Apply preserves logs/manifests/inputs,
+suspends the exact original Job, confirms its Pod is gone, then uses an exact
+UID/resourceVersion deletion precondition before creating one held guarded
+replacement. The original broad review is retained unchanged; a separate
+transition receipt binds that one replacement and the reviewed code. Failed
+or uncertain attempts require another review, not re-running these commands.
+Existing PKI, accepted SMS state, completed Jobs and infrastructure are not
+recreated. The continuation uses the normal ONAP and remaining-SMO gates;
+it never forces a Finished marker. Full SMO readiness and the later isolated
+PyNTS scheduled positive control remain separate from this startup repair.
+
 ## New experiments: fresh-start compatibility baseline
 
 **Update/Pull this repository-backed profile in POWDER and compare the full

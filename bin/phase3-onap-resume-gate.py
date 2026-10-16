@@ -42,9 +42,12 @@ def check(directory='/local/setup/phase3-smo/compatibility', context_path='/loca
     preload_spec=importlib.util.spec_from_file_location('resume_sms_preload',ROOT/'phase3-sms-preload.py')
     preload_gate=importlib.util.module_from_spec(preload_spec);preload_spec.loader.exec_module(preload_gate)
     preload_verified=preload_gate.verify_acceptance(context_path) is not None
+    dmaap_spec=importlib.util.spec_from_file_location('resume_dmaap',ROOT/'phase3-dmaap-recovery.py')
+    dmaap_gate=importlib.util.module_from_spec(dmaap_spec);dmaap_spec.loader.exec_module(dmaap_gate)
+    dmaap_verified=dmaap_gate.verify_acceptance(context_path) is not None
     fresh_spec=importlib.util.spec_from_file_location('resume_fresh',ROOT/'phase3-fresh-start.py')
     fresh=importlib.util.module_from_spec(fresh_spec);fresh_spec.loader.exec_module(fresh)
-    errors=fresh.onap_errors(resources, preload_verified=preload_verified)
+    errors=fresh.onap_errors(resources, preload_verified=preload_verified,dmaap_verified=dmaap_verified)
     if errors:raise ValueError('ONAP continuation refused: '+errors[0])
     def items(kind):return [r for r in resources if r['kind']==kind]
     onap_ready(get('nodes')['items'],items('Deployment'),items('StatefulSet'),items('Job'),items('PersistentVolumeClaim'),get('kafkas.kafka.strimzi.io','onap')['items'],releases)

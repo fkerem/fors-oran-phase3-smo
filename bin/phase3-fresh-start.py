@@ -91,6 +91,9 @@ def offline_rehearsal(directory, experiment):
     preload_spec = importlib.util.spec_from_file_location('sms_preload_rehearsal', ROOT/'bin/phase3-sms-preload-rehearsal.py')
     preload_rehearsal = importlib.util.module_from_spec(preload_spec); preload_spec.loader.exec_module(preload_rehearsal)
     preload_result = preload_rehearsal.check(directory/'sms-preload-isolated', docker_prefix())
+    dmaap_spec = importlib.util.spec_from_file_location('dmaap_rehearsal',ROOT/'bin/phase3-dmaap-rehearsal.py')
+    dmaap_rehearsal = importlib.util.module_from_spec(dmaap_spec);dmaap_spec.loader.exec_module(dmaap_rehearsal)
+    dmaap_result = dmaap_rehearsal.check(directory/'dmaap-isolated',docker_prefix())
     run(docker_prefix()+['run','--rm','--network','none',
         '--mount','type=bind,src='+str(pki)+',dst=/phase3-pki,readonly',
         '--mount','type=bind,src='+str(ROOT/'tools/Phase3PkiTlsProbe.java')+',dst=/checks/Phase3PkiTlsProbe.java,readonly',
@@ -125,6 +128,7 @@ def offline_rehearsal(directory, experiment):
               'sms_rehearsal':sms_result,
               'sms_backend_rehearsal':backend_result,
               'sms_preload_rehearsal':preload_result,
+              'dmaap_rehearsal':dmaap_result,
               'full_smo_tested':False,'network_during_bootstrap':'none'}
     private_write(directory/'rehearsal.json',(json.dumps(record,indent=2)+'\n').encode())
     return record
@@ -175,12 +179,14 @@ def prepare(directory, slice_urn):
     storage_check = storage_inspection(slice_urn, include_sms=True)
     # No output from runtime credentials is printed; ownership and image IDs are recorded instead.
     record = offline_rehearsal(directory,identity[:24])
+    import phase3_dmaap
+    phase3_dmaap.require_qualification(record['dmaap_rehearsal'])
     directory = Path(directory).resolve()
     pki = directory/'pki'
     context = {'schema':1,'baseline':'fresh-isolated-lab-pki','slice_urn':slice_urn,'node_uids':current,
                'storage_node':storage,'pki_directory':str(pki),'root_sha256':record['root_sha256'],
                'secret_name':'phase3-lab-pki-'+record['root_sha256'][:16],
-               'storage_preflight':storage_check,'sms_backend_contract':1,'sms_preload_contract':1,
+               'storage_preflight':storage_check,'sms_backend_contract':1,'sms_preload_contract':1,'dmaap_contract':1,
                'rehearsal_sha256':hashlib.sha256((directory/'rehearsal.json').read_bytes()).hexdigest()}
     for namespace in ('onap','nonrtric','network'):
         existing = kubectl('get','namespace',namespace,'--ignore-not-found','-o','name').strip()
@@ -198,6 +204,8 @@ def prepare(directory, slice_urn):
         raise ValueError('Unreviewed SMS preload contract')
     for resource in [phase3_preload.helper_config(), *phase3_preload.resources(context)]:
         kubectl('create','-f','-',data=json.dumps(resource).encode())
+    for resource in [phase3_dmaap.helper_config(),*phase3_dmaap.resources()]:
+        kubectl('create','-f','-',data=json.dumps(resource).encode())
     context['files_sha256'] = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pki.iterdir() if p.is_file()}
     private_write(directory/'context.json',(json.dumps(context,indent=2)+'\n').encode())
     return context
@@ -210,6 +218,8 @@ def verify_context(path, require_empty=False):
     if 'sms_preload_contract' in context and (
             type(context['sms_preload_contract']) is not int or context['sms_preload_contract'] != 1):
         raise ValueError('Unreviewed SMS preload contract')
+    if 'dmaap_contract' in context and (type(context['dmaap_contract']) is not int or context['dmaap_contract']!=1):
+        raise ValueError('Unreviewed DMAAP contract')
     actual_slice = run(['geni-get','slice_urn']).decode().strip()
     if actual_slice != context['slice_urn']:
         raise ValueError('Allocation slice changed')
@@ -251,10 +261,17 @@ def verify_context(path, require_empty=False):
         actual=json.loads(kubectl('get','configmap',expected['metadata']['name'],'-n','onap','-o','json'))
         if actual.get('immutable') is not True or actual.get('data')!=expected['data']:
             raise ValueError('Immutable SMS preload helper changed')
+    if context.get('dmaap_contract')==1:
+        import phase3_dmaap
+        phase3_dmaap.require_qualification(json.loads((directory/'rehearsal.json').read_text()).get('dmaap_rehearsal',{}))
+        expected=phase3_dmaap.helper_config()
+        actual=json.loads(kubectl('get','configmap',expected['metadata']['name'],'-n','onap','-o','json'))
+        if actual.get('immutable') is not True or actual.get('data')!=expected['data']:
+            raise ValueError('Immutable DMAAP helper changed')
     return context
 
 
-def onap_errors(resources, preload_verified=False):
+def onap_errors(resources, preload_verified=False, dmaap_verified=False):
     errors=[]
     kinds={r['kind'] for r in resources}
     if not {'Deployment','StatefulSet','Job'}.issubset(kinds):
@@ -262,6 +279,13 @@ def onap_errors(resources, preload_verified=False):
     for r in resources:
         spec=r.get('spec',{}); status=r.get('status',{}); kind=r['kind']; name=r['metadata']['name']
         if kind=='Job':
+            if name=='onap-dmaap-bc-dmaap-provisioning' and r['metadata'].get('annotations',{}).get('phase3.onap.org/dmaap-gate')=='guarded-v1':
+                import phase3_dmaap
+                pod=spec.get('template',{}).get('spec',{})
+                if (not dmaap_verified or spec.get('suspend') is not False or spec.get('backoffLimit')!=0
+                        or pod.get('restartPolicy')!='Never' or len(pod.get('containers',[]))!=1
+                        or not phase3_dmaap.is_client(pod['containers'][0])):
+                    raise ValueError('DMAAP guarded acceptance unavailable; Job Complete alone is not acceptance')
             if name == phase3_sms.JOB:
                 if spec.get('suspend') is True:
                     raise ValueError('SMS preload is safely held: explicit write-safety review is required; do not unsuspend stock preload')
@@ -295,10 +319,14 @@ def wait_onap(path, timeout):
     preload_spec=importlib.util.spec_from_file_location('preload_acceptance',ROOT/'bin/phase3-sms-preload.py')
     preload_gate=importlib.util.module_from_spec(preload_spec); preload_spec.loader.exec_module(preload_gate)
     preload_verified=preload_gate.verify_acceptance(path) is not None
+    dmaap_spec=importlib.util.spec_from_file_location('dmaap_acceptance',ROOT/'bin/phase3-dmaap-recovery.py')
+    dmaap_gate=importlib.util.module_from_spec(dmaap_spec);dmaap_spec.loader.exec_module(dmaap_gate)
+    dmaap_verified=dmaap_gate.verify_acceptance(path) is not None
+    if context.get('dmaap_contract')==1 and not dmaap_verified:raise ValueError('Fresh DMAAP acceptance required')
     deadline=time.monotonic()+timeout
     while True:
         resources=json.loads(kubectl('get','deployments,statefulsets,jobs','-n','onap','-o','json'))['items']
-        errors=onap_errors(resources, preload_verified=preload_verified)
+        errors=onap_errors(resources, preload_verified=preload_verified, dmaap_verified=dmaap_verified)
         if not errors:
             break
         if time.monotonic()>=deadline:
@@ -306,6 +334,7 @@ def wait_onap(path, timeout):
         print('ONAP prerequisite gate: %d pending'%len(errors),flush=True)
         time.sleep(20)
         preload_verified=preload_gate.verify_acceptance(path) is not None
+        dmaap_verified=dmaap_gate.verify_acceptance(path) is not None
     service=json.loads(kubectl('get','service','aaf-locate','-n','onap','-o','json'))
     tls=ssl.create_default_context(cafile=str(Path(context['pki_directory'])/'root.cer'))
     with socket.create_connection((service['spec']['clusterIP'],8095),timeout=20) as sock:
@@ -337,6 +366,7 @@ def wait_onap(path, timeout):
         raise ValueError('No actual successful AAF retrieval initializer was observed')
     verify_context(path)
     preload_gate.verify_acceptance(path)
+    dmaap_gate.verify_acceptance(path)
     result={'schema':1,'passed':True,'slice_urn':context['slice_urn'],'root_sha256':context['root_sha256'],
             'server_leaf_sha256':leaf_sha,'hostname_verified':'aaf-locate.onap','successful_agent_initializers':agents,
             'successful_ves_initializers':ves,
