@@ -174,18 +174,43 @@ def sms_proof(pod, cm, client_log, cm_log):
             'matched_requests_sha256': sha(requests), 'client_log_sha256': hashlib.sha256(client_log.encode()).hexdigest()}
 
 
-def ready_pods(pods, names):
+def ready_pods(pods, names, statefulsets=()):
     result = []
     now = datetime.now(timezone.utc)
     for name in names:
         matches = [p for p in pods if not p['metadata'].get('deletionTimestamp') and any(c['name'] == name for c in p['spec'].get('containers', []))]
-        if len(matches) != 1 or not condition(matches[0], 'Ready'):
-            raise ValueError('Prerequisite not uniquely Ready: '+name)
-        pod = matches[0]
-        transition = next(c['lastTransitionTime'] for c in pod['status']['conditions'] if c['type'] == 'Ready')
-        if (now-timestamp(transition)).total_seconds() < 120:
-            raise ValueError('Prerequisite has not been Ready for two minutes: '+name)
-        result.append({'uid': pod['metadata']['uid'], 'restarts': {s['name']: s.get('restartCount', 0) for s in pod['status']['containerStatuses']}})
+        if name == 'aaf-sms-quorumclient':
+            # The reviewed chart intentionally has a three-member quorum.
+            # Multiple matches are allowed only for this exact StatefulSet,
+            # never by accepting any arbitrary set of similarly named Pods.
+            owners = [s for s in statefulsets if s['metadata']['name'] == 'onap-aaf-sms-quorumclient']
+            if len(owners) != 1:
+                raise ValueError('Missing unique SMS quorum StatefulSet')
+            owner = owners[0]; status = owner.get('status', {})
+            if (owner.get('kind') != 'StatefulSet' or owner['metadata'].get('namespace') != 'onap'
+                    or owner['spec'].get('replicas') != 3 or owner['spec'].get('ordinals', {}).get('start', 0) != 0
+                    or status.get('observedGeneration') != owner['metadata']['generation']
+                    or any(status.get(k) != 3 for k in ('replicas', 'readyReplicas', 'updatedReplicas', 'currentReplicas'))
+                    or not status.get('currentRevision') or status.get('currentRevision') != status.get('updateRevision')
+                    or {p['metadata']['name'] for p in matches} != {'onap-aaf-sms-quorumclient-'+str(i) for i in range(3)}):
+                raise ValueError('SMS quorum is not the reconciled reviewed three-member set')
+            for pod in matches:
+                references = [o for o in pod['metadata'].get('ownerReferences', []) if o.get('controller') is True]
+                if (len(references) != 1 or references[0].get('kind') != 'StatefulSet'
+                        or references[0].get('uid') != owner['metadata']['uid']
+                        or pod['metadata'].get('labels', {}).get('controller-revision-hash') != status['currentRevision']):
+                    raise ValueError('SMS quorum Pod ownership or revision mismatch')
+            result.append({'statefulset_uid': owner['metadata']['uid'], 'generation': owner['metadata']['generation'],
+                           'revision': status['currentRevision'], 'expected_replicas': 3})
+        elif len(matches) != 1:
+            raise ValueError('Prerequisite not unique: '+name)
+        for pod in sorted(matches, key=lambda p: p['metadata']['name']):
+            if not condition(pod, 'Ready'):
+                raise ValueError('Prerequisite not Ready: '+name)
+            transition = next(c['lastTransitionTime'] for c in pod['status']['conditions'] if c['type'] == 'Ready')
+            if (now-timestamp(transition)).total_seconds() < 120:
+                raise ValueError('Prerequisite has not been Ready for two minutes: '+name)
+            result.append({'uid': pod['metadata']['uid'], 'restarts': {s['name']: s.get('restartCount', 0) for s in pod['status']['containerStatuses']}})
     return result
 
 
@@ -241,7 +266,7 @@ def inspect(target, expected_slice, rehearsal=None):
         if target == 'sms':
             cm = next(p for p in pods if any(c['name'] == 'aaf-cm' for c in p['spec'].get('containers', [])))
             record['issuance_proof'] = sms_proof(pod, cm, logs(pod['metadata']['name'], 'aaf-sms-aaf-config'), logs(cm['metadata']['name'], 'aaf-cm'))
-            record['dependencies'] = ready_pods(pods, ('aaf-locate', 'aaf-cm', 'aaf-service', 'aaf-sms', 'aaf-sms-quorumclient', 'dcae-ves-collector'))
+            record['dependencies'] = ready_pods(pods, ('aaf-locate', 'aaf-cm', 'aaf-service', 'aaf-sms', 'aaf-sms-quorumclient', 'dcae-ves-collector'), get('statefulsets')['items'])
         else:
             record['dependencies'] = ready_pods(pods, ('dmaap-bc', 'dcae-ves-collector'))
             if not condition(get('job/'+TARGETS['sms']), 'Complete'):

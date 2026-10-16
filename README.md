@@ -341,7 +341,10 @@ pointing to a successful exact-image isolated rehearsal receipt. Audit
 writes private evidence but changes no workload. Apply requires unchanged
 UID/resource-version/spec evidence and the still-valid one-hour operator
 gate. Review/recover in order: VES, SMS, DMAAP. Dependencies must have been
-Ready for two minutes. Each failed Job's complete retained history must
+Ready for two minutes. The SMS dependency check requires all three
+reconciled, revision-matched quorum StatefulSet members; arbitrary
+multiple matches refuse.
+Each failed Job's complete retained history must
 prove its main never ran, and executable/storage inputs must match its
 retained Helm manifest. SMS also requires matching pre-issuance sponsorship
 403s for the same Pod IP and execution window; ambiguity refuses replay.

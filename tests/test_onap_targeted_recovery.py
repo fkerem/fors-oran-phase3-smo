@@ -155,12 +155,36 @@ class JobTests(unittest.TestCase):
             with self.assertRaises(ValueError):recovery.timestamp(bad)
 
     def test_prerequisites_require_two_minutes_stability(self):
-        pod={'metadata':{'uid':'dep'},'spec':{'containers':[{'name':'dependency'}]},'status':{
+        pod={'metadata':{'uid':'dep','name':'dependency-pod'},'spec':{'containers':[{'name':'dependency'}]},'status':{
             'conditions':[{'type':'Ready','status':'True','lastTransitionTime':datetime.now(timezone.utc).isoformat()}],
             'containerStatuses':[{'name':'dependency','restartCount':0}]}}
         with self.assertRaises(ValueError):recovery.ready_pods([pod],['dependency'])
         pod['status']['conditions'][0]['lastTransitionTime']=(datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat()
         self.assertEqual('dep',recovery.ready_pods([pod],['dependency'])[0]['uid'])
+
+    def test_sms_quorum_requires_all_three_expected_owned_stable_replicas(self):
+        owner={'kind':'StatefulSet','metadata':{'name':'onap-aaf-sms-quorumclient','namespace':'onap','uid':'owner','generation':1},
+               'spec':{'replicas':3},'status':{'observedGeneration':1,'replicas':3,'readyReplicas':3,
+                    'updatedReplicas':3,'currentReplicas':3,'currentRevision':'rev','updateRevision':'rev'}}
+        stable=(datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat()
+        pods=[{'metadata':{'name':'onap-aaf-sms-quorumclient-'+str(i),'uid':'quorum-'+str(i),
+                'labels':{'controller-revision-hash':'rev'},'ownerReferences':[{'kind':'StatefulSet','controller':True,'uid':'owner'}]},
+               'spec':{'containers':[{'name':'aaf-sms-quorumclient'}]},'status':{
+                'conditions':[{'type':'Ready','status':'True','lastTransitionTime':stable}],
+                'containerStatuses':[{'name':'aaf-sms-quorumclient','restartCount':0}]}} for i in range(3)]
+        record=recovery.ready_pods(pods,['aaf-sms-quorumclient'],[owner])
+        self.assertEqual(3,record[0]['expected_replicas']); self.assertEqual(4,len(record))
+        for mode in ('missing','foreign','unready','new','revision','count','controller'):
+            changed=copy.deepcopy(pods); ss=copy.deepcopy(owner)
+            if mode=='missing':changed.pop()
+            if mode=='foreign':changed[0]['metadata']['ownerReferences'][0]['uid']='other'
+            if mode=='unready':changed[0]['status']['conditions'][0]['status']='False'
+            if mode=='new':changed[0]['status']['conditions'][0]['lastTransitionTime']=datetime.now(timezone.utc).isoformat()
+            if mode=='revision':changed[0]['metadata']['labels']['controller-revision-hash']='other'
+            if mode=='count':ss['spec']['replicas']=2
+            if mode=='controller':ss['status']['observedGeneration']=0
+            with self.assertRaises(ValueError,msg=mode):recovery.ready_pods(changed,['aaf-sms-quorumclient'],[ss])
+        with self.assertRaises(ValueError):recovery.ready_pods(pods,['aaf-sms-quorumclient'])
 
 
 if __name__=='__main__':unittest.main()
