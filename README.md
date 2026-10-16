@@ -216,6 +216,60 @@ do not establish exactly-once execution or total downstream write counts.
 
 ## New experiments: fresh-start compatibility baseline
 
+### Internal-only Kong proxy and retained recovery
+
+Both supported releases now generate `kong.proxy.type=ClusterIP`. New contexts
+set `kong_proxy_contract=1`; the first Service/endpoint identity is accepted
+after non-RT RIC readiness and reverified before NTS and during provenance.
+The proxy retains ports 80/443 and the existing selector. No MetalLB, extra
+public IP, NodePort or Kong Admin change is introduced. This is startup/access
+compatibility, not a certificate-runtime or vulnerability assessment.
+
+Retained allocations do not acquire this contract or regenerate their values.
+For the inspected revision-2 Kong readiness timeout only, stage the reviewed
+revision separately and retain both clean historical checkouts (`f952ce5` for
+DMAAP acceptance; `26480b1` for O-RU acceptance):
+
+```sh
+python3 tools/phase3-kong-proxy.py audit --expected-slice "$slice" \
+  --accepted-dmaap-checkout /var/tmp/ACCEPTED-F952CE5-CHECKOUT \
+  --accepted-oru-checkout /var/tmp/ACCEPTED-26480B1-CHECKOUT \
+  --review-file /local/setup/phase3-smo/fresh-start/UNIQUE-kong-proxy-review.json
+# Review the preserved blocker, exact one-field manifest delta and dry-run.
+# Use the same arguments with action apply for the single guarded transition.
+python3 tools/phase3-kong-proxy.py continue --expected-slice "$slice" \
+  --accepted-dmaap-checkout /var/tmp/ACCEPTED-F952CE5-CHECKOUT \
+  --accepted-oru-checkout /var/tmp/ACCEPTED-26480B1-CHECKOUT
+```
+
+Audit creates a separate hashed ClusterIP override, leaving original values,
+charts, contexts, receipts and failed latches untouched. Reviews expire after
+30 minutes. Apply retains a durable intent latch and sends one type-only JSON
+Patch with Service UID/resourceVersion/type preconditions. Kubernetes clears
+LoadBalancer-only allocations; any additional change is refused. It then runs
+one no-hook Helm reconciliation using the original artifacts plus the separate
+override. Service UID/ClusterIP, ports, selector, existing Pods and endpoints
+must remain bound. Lost write responses, failures or drift stop without retry,
+overwrite, status patch, automatic rollback or readiness bypass.
+
+Only separate current acceptance permits the first, unattempted NTS install and
+normal full-SMO checks. No infrastructure, SMS, DMAAP or completed Job is replayed.
+Completion markers appear only after normal readiness and current acceptance.
+Raw Helm values, API bodies, initializer logs and recovery material stay private.
+
+For optional proxy access, bind only to node-0 loopback and tunnel it over SSH:
+
+```sh
+# On node-0:
+kubectl -n nonrtric port-forward --address 127.0.0.1 service/oran-nonrtric-kong-proxy 18080:80 18443:443
+# Locally, substitute the allocated node-0 hostname:
+ssh -N -L 18080:127.0.0.1:18080 -L 18443:127.0.0.1:18443 fors@NODE_0_HOSTNAME
+```
+
+The unauthenticated root-response check establishes listener reachability only.
+It neither validates authenticated routes nor establishes TLS trust. The proxy
+and SDNC dashboard certificates remain distinct from later certificate cases.
+
 ### O-RU cross-namespace readiness
 
 New contexts set `oru_readiness_contract=1`. After ONAP acceptance and before

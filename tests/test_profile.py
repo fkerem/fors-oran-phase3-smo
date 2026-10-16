@@ -1,3 +1,4 @@
+import copy
 import io
 import importlib.util
 import json
@@ -92,6 +93,48 @@ class CachedChartTests(unittest.TestCase):
             self.assertFalse(lock.exists())
 
 class CompatibilityTests(unittest.TestCase):
+    def test_both_releases_preserve_kong_settings_except_proxy_type(self):
+        base = {"kong": {"proxy": {"type": "LoadBalancer", "annotations": {"retain": "yes"},
+                                  "http": {"enabled": True, "servicePort": 80, "containerPort": 8000},
+                                  "tls": {"enabled": True, "servicePort": 443, "containerPort": 8443}},
+                         "admin": {"enabled": False}, "env": {"database": "off"}},
+                "unrelated": {"retain": [1, 2]}}
+        original = copy.deepcopy(base)
+        expected = copy.deepcopy(base["kong"])
+        expected["proxy"]["type"] = "ClusterIP"
+        for release in ("g-release", "f-release"):
+            with self.subTest(release=release), tempfile.TemporaryDirectory() as temp:
+                source, target = Path(temp)/"defaults", Path(temp)/"prepared"
+                source.mkdir()
+                names = ["onap-override.yaml", "oran-override.yaml", "network-simulators-override.yaml",
+                         "network-simulators-topology-override.yaml"]
+                for name in names:
+                    (source/name).write_text(yaml.safe_dump(base))
+                values.prepare(source, target, release)
+                self.assertEqual(set(names), {p.name for p in target.iterdir()})
+                for name in names:
+                    result = yaml.safe_load((target/name).read_text())
+                    self.assertEqual(expected if name == "oran-override.yaml" else original["kong"], result["kong"])
+                    self.assertEqual(original["unrelated"], result["unrelated"])
+                    self.assertEqual(original, yaml.safe_load((source/name).read_text()))
+                self.assertEqual(original, yaml.safe_load((target/"network-simulators-topology-override.yaml").read_text()))
+
+    def test_kong_fragments_keep_the_other_approved_nonrtric_values(self):
+        for release in ("g-release", "f-release"):
+            with self.subTest(release=release):
+                fragments = values.fragments(release)
+                expected = {"global": {"persistence": {"mountPath": "/storage/nfs/deployment-1"}},
+                            "nonrtric": {"persistence": {"mountPath": "/storage/nfs/deployment-1"}},
+                            "a1policymanagement": {"enabled": False, "rics": []},
+                            "kong": {"proxy": {"type": "ClusterIP"}}}
+                if release == "g-release":
+                    expected.update({"odu-app": {"image": {"repository": "nexus3.o-ran-sc.org:10002/o-ran-sc/nonrtric-rapp-ransliceassurance"}},
+                                     "odu-app-ics-version": {"image": {"repository": "nexus3.o-ran-sc.org:10002/o-ran-sc/nonrtric-rapp-ransliceassurance-icsversion"}}})
+                self.assertEqual(expected, fragments["oran-override.yaml"])
+                self.assertEqual({"onap-override.yaml", "oran-override.yaml", "network-simulators-override.yaml"}, set(fragments))
+                for name in ("onap-override.yaml", "network-simulators-override.yaml"):
+                    self.assertNotIn("kong", fragments[name])
+
     def test_g_overlay_preserves_storage_and_unrelated_settings(self):
         base = {"global": {"persistence": {"existing": True}}, "odu-app": {"image": {"tag": "1.0.0"}}}
         result = values.merge(base, values.fragments("g-release")["oran-override.yaml"])
@@ -173,5 +216,77 @@ class ReadinessTests(unittest.TestCase):
         baseline = list(self.baseline())
         for kafkas in ([], [dict(baseline[-1][0], ready=False)], [dict(baseline[-1][0], generation=2)]):
             self.assertTrue(any("Kafka" in error for error in provenance.assess(*baseline[:-1], kafkas)))
+
+class KongProvenanceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name)/"context.json"
+        self.context = {"slice_urn": "urn:publicid:IDN+emulab.net:fixture+slice+new", "kong_proxy_contract": 1}
+
+    def collect(self, outcome):
+        def command(args):
+            if args[:2] == ["helm", "list"]:
+                return '[]'
+            if 'get' in args:
+                return '{"items":[]}'
+            if args[:2] == ["kubectl", "version"]:
+                return '{}'
+            return 'fixture'
+
+        self.path.write_text(json.dumps(self.context))
+        original = self.path.read_bytes()
+        with patch.object(provenance, 'command', side_effect=command), \
+                patch.object(provenance, 'assess', return_value=[]), \
+                patch.object(provenance.subprocess, 'run') as run:
+            if isinstance(outcome, Exception):
+                run.side_effect = outcome
+            else:
+                run.return_value = outcome
+            result = provenance.collect(self.path)
+        self.assertEqual(original, self.path.read_bytes())
+        self.assertEqual([self.path], list(self.path.parent.iterdir()))
+        return result, run
+
+    def test_new_contract_verification_is_readonly(self):
+        result, run = self.collect(SimpleNamespace(returncode=0))
+        self.assertEqual({'verified': True}, result['kong_proxy_current'])
+        self.assertEqual([], result['readiness_errors'])
+        run.assert_called_once_with(['python3', str(ROOT/'tools/phase3-kong-proxy.py'), 'verify-fresh',
+            '--context', str(self.path), '--expected-slice', self.context['slice_urn']], capture_output=True, timeout=180)
+
+    def test_cli_failure_timeout_and_launch_error_fail_readiness(self):
+        for outcome in (SimpleNamespace(returncode=1), subprocess.TimeoutExpired('kong-verify', 180), OSError('unavailable')):
+            with self.subTest(outcome=outcome):
+                result, run = self.collect(outcome)
+                run.assert_called_once()
+                self.assertEqual({'verified': False}, result['kong_proxy_current'])
+                self.assertEqual(['Kong proxy current verification is not established'], result['readiness_errors'])
+
+    def test_retained_context_without_contract_skips_cli(self):
+        del self.context['kong_proxy_contract']
+        result, run = self.collect(SimpleNamespace(returncode=1))
+        run.assert_not_called()
+        self.assertIsNone(result['kong_proxy_current'])
+        self.assertEqual([], result['readiness_errors'])
+
+    def test_malformed_contract_fails_without_launching_cli(self):
+        for value in (0, 2, -1, None, '1', True, False, 1.0, [], {}):
+            with self.subTest(value=value):
+                self.context['kong_proxy_contract'] = value
+                result, run = self.collect(SimpleNamespace(returncode=0))
+                run.assert_not_called()
+                self.assertEqual({'verified': False}, result['kong_proxy_current'])
+                self.assertEqual(['Kong proxy current verification is not established'], result['readiness_errors'])
+
+    def test_require_ready_exits_unsuccessfully_and_records_kong_failure(self):
+        result, _ = self.collect(SimpleNamespace(returncode=1))
+        output = self.path.parent/'provenance.json'
+        with patch.object(provenance, 'collect', return_value=result), \
+                patch.object(sys, 'argv', ['collect-phase3-provenance.py', '--require-ready', '--output', str(output)]), \
+                patch('builtins.print'), self.assertRaises(SystemExit) as exit_result:
+            provenance.main()
+        self.assertEqual(1, exit_result.exception.code)
+        self.assertEqual({'verified': False}, json.loads(output.read_text())['kong_proxy_current'])
+
 
 if __name__ == "__main__": unittest.main()

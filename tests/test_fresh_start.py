@@ -8,6 +8,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import shlex
 import ssl
 import subprocess
 import sys
@@ -258,6 +259,129 @@ class FreshOverlayTests(unittest.TestCase):
             fresh.storage_inspection('urn:publicid:IDN+emulab.net:p+slice+fresh')
             self.assertIn('node-2',command.call_args.args[0])
             self.assertNotIn('pc12-fort.emulab.net',' '.join(command.call_args.args[0]))
+
+
+class KongFreshIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name)
+        self.pki = self.path/'pki'; self.pki.mkdir()
+        for name in ('root.cer', 'intermediate.cer', 'truststoreONAPall.jks'):
+            (self.pki/name).write_text('synthetic fixture')
+        self.nodes = [{'metadata': {'name': 'node-'+str(i), 'uid': 'fresh-'+str(i),
+                                   'labels': {'kubernetes.io/hostname': 'node-'+str(i)}},
+                       'spec': {}, 'status': {'conditions': [{'type': 'Ready', 'status': 'True'}]}} for i in range(3)]
+        self.slice = 'urn:publicid:IDN+emulab.net:fixture+slice+new'
+        receipt = b'{"root_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","dmaap_rehearsal":{}}'
+        (self.path/'rehearsal.json').write_bytes(receipt)
+        self.context = {'schema': 1, 'baseline': 'fresh-isolated-lab-pki', 'slice_urn': self.slice,
+                        'node_uids': {n['metadata']['name']: n['metadata']['uid'] for n in self.nodes},
+                        'storage_node': select_storage_node(self.nodes), 'pki_directory': str(self.pki),
+                        'secret_name': 'synthetic-pki', 'files_sha256': {},
+                        'rehearsal_sha256': hashlib.sha256(receipt).hexdigest()}
+
+    def test_verify_rejects_malformed_contract_before_external_checks(self):
+        for value in (0, 2, -1, None, '1', True, False, 1.0, [], {}):
+            with self.subTest(value=value):
+                path = self.path/'context.json'
+                path.write_text(json.dumps(dict(self.context, kong_proxy_contract=value)))
+                with patch.object(fresh, 'run') as run, patch.object(fresh, 'cluster_nodes') as nodes, \
+                        patch.object(fresh, 'kubectl') as kubectl:
+                    with self.assertRaisesRegex(ValueError, 'Unreviewed Kong proxy contract'):
+                        fresh.verify_context(path)
+                run.assert_not_called(); nodes.assert_not_called(); kubectl.assert_not_called()
+
+    def test_verify_accepts_integer_one_and_leaves_retained_context_absent(self):
+        helper = {'metadata': {'name': 'fixture-helper'}, 'immutable': True, 'data': {}}
+        for extra in ({}, {'kong_proxy_contract': 1}):
+            with self.subTest(extra=extra):
+                path = self.path/'context.json'
+                context = dict(self.context, **extra)
+                path.write_text(json.dumps(context)); original = path.read_bytes()
+                with patch.object(fresh, 'run', return_value=self.slice.encode()) as run, \
+                        patch.object(fresh, 'cluster_nodes', return_value=self.nodes), \
+                        patch.object(fresh, 'helper_config', return_value=helper), \
+                        patch.object(fresh, 'secret', return_value={'data': {}}), \
+                        patch.object(fresh, 'kubectl', return_value=json.dumps(helper).encode()), \
+                        patch.object(fresh, 'private_write') as write:
+                    self.assertEqual(context, fresh.verify_context(path))
+                run.assert_called_once_with(['geni-get', 'slice_urn'])
+                write.assert_not_called()
+                self.assertEqual(original, path.read_bytes())
+
+    def test_prepare_sets_integer_contract_without_adding_resources(self):
+        import phase3_dmaap
+        import phase3_preload
+        receipt = json.loads((self.path/'rehearsal.json').read_text())
+        with patch.object(fresh, 'cluster_nodes', return_value=self.nodes), \
+                patch.object(fresh, 'storage_inspection', return_value={'paths': []}), \
+                patch.object(fresh, 'offline_rehearsal', return_value=receipt), \
+                patch.object(phase3_dmaap, 'require_qualification'), \
+                patch.object(fresh, 'assert_empty_onap'), \
+                patch.object(fresh, 'kubectl', return_value=b'') as kubectl, \
+                patch.object(fresh, 'secret', return_value={'kind': 'Secret', 'metadata': {'name': 'fixture-pki', 'namespace': 'onap'}}):
+            context = fresh.prepare(self.path, self.slice)
+        self.assertIs(type(context['kong_proxy_contract']), int)
+        self.assertEqual(1, context['kong_proxy_contract'])
+        self.assertEqual(context, json.loads((self.path/'context.json').read_text()))
+        resources = [json.loads(call.kwargs['data']) for call in kubectl.call_args_list if 'data' in call.kwargs]
+        expected = [helper_config(ns) for ns in ('onap', 'nonrtric', 'network')]
+        expected += [{'kind': 'Secret', 'metadata': {'name': 'fixture-pki', 'namespace': 'onap'}},
+                     fresh.phase3_ves.config(context), fresh.phase3_sms.config(context), fresh.phase3_sms_backend.config(context),
+                     phase3_preload.helper_config(), *phase3_preload.resources(context),
+                     phase3_dmaap.helper_config(), *phase3_dmaap.resources()]
+        self.assertEqual(expected, resources)
+        self.assertEqual([('create', 'namespace', ns) for ns in ('onap', 'nonrtric', 'network')],
+                         [call.args for call in kubectl.call_args_list if call.args[:2] == ('create', 'namespace')])
+
+    def test_setup_orders_kong_verification_between_oru_and_simulators(self):
+        source = (ROOT/'setup-oran-smo.sh').read_text()
+        oru = source.index('phase3-oru-readiness.py" verify-fresh')
+        kong = source.index('phase3-kong-proxy.py" verify-fresh')
+        nts = source.index('helm upgrade --install oran-simulator')
+        self.assertLess(oru, kong); self.assertLess(kong, nts)
+        self.assertEqual(1, source.count('phase3-kong-proxy.py'))
+
+    def run_setup_gate(self, contract, status=0):
+        source = (ROOT/'setup-oran-smo.sh').read_text()
+        oru = source.index('phase3-oru-readiness.py" verify-fresh')
+        gate = source[source.index('if python3 - "$PHASE3_FRESH_CONTEXT"', oru):
+                      source.index('helm upgrade --install oran-simulator', oru)]
+        path = self.path/'context.json'
+        path.write_text(json.dumps(dict(self.context, **contract))); original = path.read_bytes()
+        shell = '''set -e
+python3() {
+    if [ "$1" = "$SRC/tools/phase3-kong-proxy.py" ]; then
+        printf '%s\\n' "lock=$PHASE3_RECOVERY_LOCK_FD" "$@"
+        return "$KONG_TEST_STATUS"
+    fi
+    command '''+shlex.quote(sys.executable)+''' "$@"
+}
+geni-get() { printf '%s\\n' "$KONG_TEST_SLICE"; }
+'''+gate+'''printf '%s\\n' 'nts-install'
+'''
+        env = dict(os.environ, SRC=str(ROOT), PHASE3_FRESH_CONTEXT=str(path),
+                   KONG_TEST_STATUS=str(status), KONG_TEST_SLICE=self.slice)
+        result = subprocess.run(['bash', '-c', shell], text=True, capture_output=True, env=env)
+        self.assertEqual(original, path.read_bytes())
+        return result
+
+    def test_setup_binds_new_identity_with_driver_fd9(self):
+        result = self.run_setup_gate({'kong_proxy_contract': 1})
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(['lock=9', str(ROOT/'tools/phase3-kong-proxy.py'), 'verify-fresh',
+                          '--context', str(self.path/'context.json'), '--expected-slice', self.slice,
+                          '--bind-identity', 'nts-install'], result.stdout.splitlines())
+
+    def test_setup_skips_kong_for_retained_context(self):
+        result = self.run_setup_gate({})
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(['nts-install'], result.stdout.splitlines())
+
+    def test_setup_kong_failure_stops_before_simulator_install(self):
+        result = self.run_setup_gate({'kong_proxy_contract': 1}, status=7)
+        self.assertEqual(7, result.returncode, result.stderr)
+        self.assertNotIn('nts-install', result.stdout.splitlines())
 
 
 if __name__=='__main__':unittest.main()

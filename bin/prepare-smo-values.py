@@ -22,7 +22,8 @@ def fragments(release):
             "dmaap": {"message-router": {"message-router-zookeeper": {"persistence": persistence},
                                           "message-router-kafka": {"persistence": persistence}}}}
     nonrtric = {"global": {"persistence": persistence}, "nonrtric": {"persistence": persistence},
-                "a1policymanagement": {"enabled": False, "rics": []}}
+                "a1policymanagement": {"enabled": False, "rics": []},
+                "kong": {"proxy": {"type": "ClusterIP"}}}
     if release == "g-release":
         nonrtric.update({"odu-app": {"image": {"repository": "nexus3.o-ran-sc.org:10002/o-ran-sc/nonrtric-rapp-ransliceassurance"}},
                         "odu-app-ics-version": {"image": {"repository": "nexus3.o-ran-sc.org:10002/o-ran-sc/nonrtric-rapp-ransliceassurance-icsversion"}}})

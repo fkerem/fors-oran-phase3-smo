@@ -119,6 +119,22 @@ def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
             capture_output=True,timeout=180)
         oru_current={'verified':result.returncode==0}
         if result.returncode:errors.append('O-RU readiness current identity/RBAC verification is not established')
+    kong_proxy_current = None
+    try:
+        if Path(context_path).is_file():
+            context = json.loads(Path(context_path).read_text())
+            if 'kong_proxy_contract' in context:
+                if type(context['kong_proxy_contract']) is not int or context['kong_proxy_contract'] != 1:
+                    raise ValueError('Unreviewed Kong proxy contract')
+                result = subprocess.run(['python3', str(ROOT/'tools/phase3-kong-proxy.py'), 'verify-fresh',
+                    '--context', str(context_path), '--expected-slice', context['slice_urn']],
+                    capture_output=True, timeout=180)
+                if result.returncode:
+                    raise ValueError('Kong proxy verification failed')
+                kong_proxy_current = {'verified': True}
+    except (OSError, ValueError, RuntimeError, KeyError, subprocess.TimeoutExpired):
+        kong_proxy_current = {'verified': False}
+        errors.append('Kong proxy current verification is not established')
     preload_verified = False
     preload_current = None
     dmaap_acceptance = None
@@ -165,6 +181,7 @@ def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
             "sms_preload_current": preload_current,
             "dmaap_current":dmaap_current,
             "oru_readiness_current":oru_current,
+            "kong_proxy_current": kong_proxy_current,
             "source_dependencies": dependencies, "chart_compatibility": compatibility,
             "readiness_errors": errors}
 

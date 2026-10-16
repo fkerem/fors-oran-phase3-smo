@@ -159,6 +159,15 @@ helm upgrade --install oran-nonrtric "$work/prepared/nonrtric.tgz" \
     -f "$values/oran-override.yaml" --wait --timeout 30m
 PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/tools/phase3-oru-readiness.py" verify-fresh \
     --context "$PHASE3_FRESH_CONTEXT" --expected-slice "$(geni-get slice_urn)" --bind-fresh-identity
+if python3 - "$PHASE3_FRESH_CONTEXT" <<'PY'
+import json, sys
+context = json.load(open(sys.argv[1]))
+sys.exit(0 if type(context.get('kong_proxy_contract')) is int and context['kong_proxy_contract'] == 1 else 1)
+PY
+then
+    PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/tools/phase3-kong-proxy.py" verify-fresh \
+        --context "$PHASE3_FRESH_CONTEXT" --expected-slice "$(geni-get slice_urn)" --bind-identity
+fi
 helm upgrade --install oran-simulator "$work/prepared/ru-du-simulators.tgz" \
     --namespace network --create-namespace --post-renderer "$renderer" \
     -f "$values/network-simulators-override.yaml" \
