@@ -1,13 +1,17 @@
 #!/bin/bash
 SRC=$(cd -- "$(dirname -- "$0")" && pwd)
 resume_before_smo=0
+resume_after_onap=0
 expected_slice=
 case "$#:$1" in
     0:) ;;
     3:--resume-before-smo)
         [ "$2" = '--expected-slice' ] && [ -n "$3" ] || exit 2
         resume_before_smo=1; expected_slice=$3 ;;
-    *) echo 'Usage: setup-driver.sh [--resume-before-smo --expected-slice URN]' >&2; exit 2 ;;
+    3:--resume-after-onap)
+        [ "$2" = '--expected-slice' ] && [ -n "$3" ] || exit 2
+        resume_after_onap=1; expected_slice=$3 ;;
+    *) echo 'Usage: setup-driver.sh [--resume-before-smo|--resume-after-onap --expected-slice URN]' >&2; exit 2 ;;
 esac
 umask 077
 # The allocation prepares /local/setup before invoking this driver.
@@ -27,6 +31,15 @@ run_stage() {
     echo "Starting $1"
     "$SRC/$1" 2>&1 | tee "/local/logs/$1.log"
 }
+if [ "$resume_after_onap" -eq 1 ]; then
+    [ "$(geni-get slice_urn)" = "$expected_slice" ] && [ "$HOSTNAME" = node-0 ] || {
+        echo 'Post-ONAP continuation allocation mismatch' >&2; exit 1;
+    }
+    "$SRC/setup-oran-smo.sh" --resume-after-onap 2>&1 | tee /local/logs/phase3-post-onap-resume.log
+    run_stage setup-end.sh
+    touch "$OURDIR/setup-driver-done"
+    exit 0
+fi
 if [ "$resume_before_smo" -eq 1 ]; then
     PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/bin/phase3-predeployment-recovery.py" \
         --expected-slice "$expected_slice" --apply

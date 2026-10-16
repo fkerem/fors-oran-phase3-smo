@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 from phase3_lab_pki import CONFIG_IMAGE, AGENT_IMAGE, trust_config
+import phase3_ves
 
 ROOT = Path(__file__).resolve().parents[1]
 READINESS_IMAGE = 'nexus3.onap.org:10001/onap/oom/readiness@sha256:317c8a361ae73750f4d4a1b682c42b73de39083f73228dede31fd68b16c089db'
@@ -58,6 +59,10 @@ def overlay(resources, context):
         kind = resource.get('kind')
         meta = resource.get('metadata',{})
         name = meta.get('name','')
+        if kind == 'Deployment' and name == phase3_ves.NAME:
+            patched = phase3_ves.patch_deployment(resource, context)
+            resource.clear()
+            resource.update(patched)
         if kind == 'ConfigMap' and 'truststoreONAPall.jks.b64' in resource.get('data',{}):
             if 'truststoreONAP.p12.b64' not in resource['data']:
                 raise ValueError('Unreviewed partial AAF consumer trust ConfigMap')
@@ -75,6 +80,11 @@ def overlay(resources, context):
                     container['command'] = ['/phase3-helpers/phase3-readiness-wrapper.py']+command[1:]
                     container.setdefault('volumeMounts',[]).append({'name':'phase3-helpers','mountPath':'/phase3-helpers','readOnly':True})
                     add_volume(spec, {'name':'phase3-helpers','configMap':{'name':helper_name,'defaultMode':365}})
+                    if kind == 'Job' and name == 'onap-dmaap-bc-dmaap-provisioning':
+                        args = container.get('args', [])
+                        if args != ['--container-name', 'dmaap-bc'] or command != ['/app/ready.py']:
+                            raise ValueError('Unreviewed DMAAP provisioning readiness arguments')
+                        container['args'] = args + ['--timeout', '30']
                 elif image == CONFIG_IMAGE:
                     if container not in spec.get('initContainers',[]) or container.get('command') != ['/bin/bash'] or container.get('args') != ['-c','cd /opt/app/aaf_config\nbin/agent.sh\n']:
                         raise ValueError('Unreviewed AAF server bootstrap contract')

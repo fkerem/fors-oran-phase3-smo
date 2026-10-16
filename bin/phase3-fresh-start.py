@@ -15,6 +15,7 @@ import sys
 import time
 from phase3_fresh import READINESS_IMAGE, helper_config, select_storage_node
 from phase3_lab_pki import CONFIG_IMAGE, AGENT_IMAGE, generate, private_write, secret
+import phase3_ves
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -76,6 +77,9 @@ def offline_rehearsal(directory, experiment):
     wrapper = importlib.util.module_from_spec(spec); spec.loader.exec_module(wrapper)
     wrapper.patched_source(source)
     build_truststores(pki,directory)
+    spec = importlib.util.spec_from_file_location('ves_rehearsal', ROOT/'bin/phase3-ves-rehearsal.py')
+    ves_rehearsal = importlib.util.module_from_spec(spec); spec.loader.exec_module(ves_rehearsal)
+    ves_result = ves_rehearsal.check(pki, directory, run, docker_prefix())
     run(docker_prefix()+['run','--rm','--network','none',
         '--mount','type=bind,src='+str(pki)+',dst=/phase3-pki,readonly',
         '--mount','type=bind,src='+str(ROOT/'tools/Phase3PkiTlsProbe.java')+',dst=/checks/Phase3PkiTlsProbe.java,readonly',
@@ -106,6 +110,7 @@ def offline_rehearsal(directory, experiment):
               'pkcs12_packaging':metadata['pkcs12_packaging'],'runtime':metadata['runtime'],
               'offline_server_bootstrap':True,'live_agent_retrieval_tested':False,
               'isolated_java_tls_controls':True,
+              'ves_rehearsal':ves_result,
               'full_smo_tested':False,'network_during_bootstrap':'none'}
     private_write(directory/'rehearsal.json',(json.dumps(record,indent=2)+'\n').encode())
     return record
@@ -167,6 +172,7 @@ def prepare(directory, slice_urn):
     for namespace in ('onap','nonrtric','network'):
         kubectl('create','-f','-',data=json.dumps(helper_config(namespace)).encode())
     kubectl('create','-f','-',data=json.dumps(secret(pki,'onap',context['secret_name'])).encode())
+    kubectl('create','-f','-',data=json.dumps(phase3_ves.config(context)).encode())
     context['files_sha256'] = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pki.iterdir() if p.is_file()}
     private_write(directory/'context.json',(json.dumps(context,indent=2)+'\n').encode())
     return context
@@ -246,6 +252,7 @@ def wait_onap(path, timeout):
         raise ValueError('AAF endpoint is not presenting the prepared experiment certificate')
     pods=json.loads(kubectl('get','pods','-n','onap','-o','json'))['items']
     agents=[]
+    ves=[]
     for pod in pods:
         statuses={s['name']:s for s in pod.get('status',{}).get('initContainerStatuses',[])}
         for container in pod['spec'].get('initContainers',[]):
@@ -254,11 +261,20 @@ def wait_onap(path, timeout):
                 if state.get('exitCode')!=0:
                     raise ValueError('AAF retrieval initializer did not succeed: '+pod['metadata']['name'])
                 agents.append({'pod_uid':pod['metadata']['uid'],'container':container['name']})
+            if 'org.onap.dcaegen2.deployments.tls-init-container' in container.get('image', ''):
+                expected = phase3_ves.verify(pod, context)
+                actual = json.loads(kubectl('get', 'configmap', expected['metadata']['name'], '-n', 'onap', '-o', 'json'))
+                if any(actual.get(k) != expected.get(k) for k in ('data', 'binaryData', 'immutable')):
+                    raise ValueError('VES runtime trust/configuration changed')
+                if statuses.get(container['name'], {}).get('state', {}).get('terminated', {}).get('exitCode') != 0:
+                    raise ValueError('VES TLS initializer did not succeed')
+                ves.append({'pod_uid':pod['metadata']['uid'], 'image':phase3_ves.IMAGE})
     if not agents:
         raise ValueError('No actual successful AAF retrieval initializer was observed')
     verify_context(path)
     result={'schema':1,'passed':True,'slice_urn':context['slice_urn'],'root_sha256':context['root_sha256'],
             'server_leaf_sha256':leaf_sha,'hostname_verified':'aaf-locate.onap','successful_agent_initializers':agents,
+            'successful_ves_initializers':ves,
             'certificate_fault_cases_started':False,'full_smo_tested':False}
     private_write(Path(path).parent/'onap-acceptance.json',(json.dumps(result,indent=2)+'\n').encode())
     return result

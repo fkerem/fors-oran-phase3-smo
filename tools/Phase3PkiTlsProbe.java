@@ -1,4 +1,4 @@
-/* Isolated loopback-only Java 11 packaging/TLS controls, not an AAF API test. */
+/* Isolated loopback packaging/TLS controls, Java 8 compatible; not an AAF API test. */
 import java.io.*;
 import java.net.*;
 import java.nio.file.*;
@@ -54,7 +54,8 @@ class Phase3PkiTlsProbe {
     }
     public static void main(String[] arguments) throws Exception {
         Path directory = Paths.get(arguments[0]);
-        char[] password = Files.readString(directory.resolve("store-password")).toCharArray();
+        char[] password = new String(Files.readAllBytes(directory.resolve("store-password")),
+                                     java.nio.charset.StandardCharsets.UTF_8).toCharArray();
         KeyStore keys = load(directory.resolve("server.p12"), "PKCS12", password);
         KeyStore signer = load(directory.resolve("signer.p12"), "PKCS12", password);
         if (!keys.isKeyEntry("aaf@aaf.osaaf.org") || keys.getKey("aaf@aaf.osaaf.org", password) == null
@@ -70,7 +71,10 @@ class Phase3PkiTlsProbe {
             if (!rejected) throw new IllegalStateException("Incorrect store password accepted");
         }
         KeyStore trust = load(directory.resolve("truststoreONAPall.jks"), "JKS", "changeit".toCharArray());
-        KeyStore p12Trust = load(directory.resolve("truststoreONAP.p12"), "PKCS12", "changeit".toCharArray());
+        // The legacy VES contract uses JKS trust; do not assert that a modern
+        // keytool's unrelated PKCS12 truststore is readable by that Java 8 build.
+        boolean jksOnly = arguments.length > 1 && "jks-only".equals(arguments[1]);
+        KeyStore p12Trust = jksOnly ? trust : load(directory.resolve("truststoreONAP.p12"), "PKCS12", "changeit".toCharArray());
         if (!trust.isCertificateEntry("onaptestca") || !p12Trust.isCertificateEntry("onaptestca")) {
             throw new IllegalStateException("Missing Java trusted-certificate entry");
         }
@@ -80,6 +84,6 @@ class Phase3PkiTlsProbe {
         probe(server, context(null, trust, null), "wrong.invalid", false);
         KeyStore empty = KeyStore.getInstance("JKS"); empty.load(null, null);
         probe(server, context(null, empty, null), "aaf-locate.onap", false);
-        System.out.println("Isolated Java TLS controls passed: JKS/PKCS12, hostname and trust rejection");
+        System.out.println("Isolated Java TLS controls passed: packaging, hostname and trust rejection");
     }
 }

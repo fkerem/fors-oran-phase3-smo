@@ -321,6 +321,51 @@ An audit or selected-Job success does not attest to the full SMO baseline.
 Actual application, rehearsal and readiness outcomes must be taken from
 the allocated experiment's private receipts, not these local tests.
 
+### Targeted fresh-baseline ONAP recovery
+
+Fresh installs now configure the stock VES TLS initializer with this
+allocation's public JKS trust. Its observed 2.1.0 image is digest-pinned,
+its two startup scripts are hash-checked, and an emptyDir attempt latch
+prevents repeated issuance after an initializer failure. Stock diagnostics
+remain private; no key, signer, or new CA is supplied to VES. The isolated
+Java 8 controls exercise JKS trust, server/signer PKCS12 loading, hostname
+and untrusted-CA rejection, and OpenSSL conversion, not a live AAF API.
+The modern PKCS12 *truststore* is not asserted equivalent to the VES JKS.
+DMAAP provisioning gets a bounded 30-minute prerequisite wait rather than
+the stock ten-minute wait; its modifying main still has no automatic retry.
+
+`python3 bin/phase3-onap-recovery.py` provides separate `--audit` and
+`--apply` modes with `--expected-slice`, `--target ves|sms|dmaap`, and an
+exclusive `--review-file`. VES additionally requires `--ves-rehearsal`
+pointing to a successful exact-image isolated rehearsal receipt. Audit
+writes private evidence but changes no workload. Apply requires unchanged
+UID/resource-version/spec evidence and the still-valid one-hour operator
+gate. Review/recover in order: VES, SMS, DMAAP. Dependencies must have been
+Ready for two minutes. Each failed Job's complete retained history must
+prove its main never ran, and executable/storage inputs must match its
+retained Helm manifest. SMS also requires matching pre-issuance sponsorship
+403s for the same Pod IP and execution window; ambiguity refuses replay.
+This does not remove SMS's exclusion from the older image-recovery tool.
+
+Before exact failed-Job replacement, its private manifests and logs are
+preserved and hashed. Only the failed Job and its owned terminal Pod are
+removed; a replacement is created suspended and released for one attempt.
+No successful Job, database, PVC, or umbrella release is recreated. A
+failure stops for review, with no broad replay or destructive rollback.
+Keep all audit/apply directories private: stock configuration/logs can
+contain credentials. The suspected stock AAF organization-index race is
+not fixed by this recovery, nor by simply extending a timeout.
+
+After ONAP acceptance succeeds, continue under the driver lock:
+
+```sh
+/local/repository/setup-driver.sh --resume-after-onap --expected-slice CURRENT_SLICE_URN
+```
+
+This validates the allocation, runs the existing post-ONAP gate and remaining
+SMO/simulator stages, then normal end-stage/completion logic. Never create
+completion markers manually. Certificate fault tests remain separately gated.
+
 On node-0:
 
 ```sh

@@ -11,11 +11,11 @@ jobs:
       - run: .venv/bin/python -m pip install -r requirements-dev.txt
       - run: .venv/bin/python -m unittest discover -s tests -v
       - run: for script in setup-*.sh bin/*.sh; do bash -n "$script" || exit; done
-      - run: shellcheck -x -S error setup-lib.sh setup-disk-space.sh setup-kubespray.sh setup-driver.sh setup-oran-smo.sh setup-phase3-preflight.sh setup-end.sh bin/phase3-status.sh bin/kubespray-bootstrap-lib.sh
+      - run: shellcheck -x -S error setup-lib.sh setup-disk-space.sh setup-kubespray.sh setup-driver.sh setup-oran-smo.sh setup-phase3-preflight.sh setup-end.sh bin/phase3-status.sh bin/kubespray-bootstrap-lib.sh bin/phase3-ves-bootstrap.sh
       - run: .venv/bin/python tools/check-public-tree.py
   fresh-bootstrap:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
