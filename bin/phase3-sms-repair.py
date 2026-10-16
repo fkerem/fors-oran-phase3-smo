@@ -198,6 +198,10 @@ def finish(review, context, objects, path):
             or hashlib.sha256(Path(review['rehearsal']).read_bytes()).hexdigest() != review['rehearsal_sha256']):
         raise ValueError('SMS original context/helper/rehearsal changed')
     if protection() != review['protected']: raise ValueError('SMS protected state changed before finish')
+    expected_cm = sms.config(context)
+    actual_cm = get('configmap/'+expected_cm['metadata']['name'])
+    if any(actual_cm.get(k) != expected_cm.get(k) for k in ('data', 'immutable')):
+        raise ValueError('SMS runtime public helper changed before finish')
     # Recheck the accepted operator and every non-replaced dependency.
     memory, gate = recovery.resume_gate.acceptance_record('/local/setup/phase3-smo/compatibility')
     operator = json.loads(command(['kubectl', '-n', 'strimzi-system', 'get', 'deployment/strimzi-cluster-operator', '-o', 'json']))
