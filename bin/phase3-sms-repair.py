@@ -172,8 +172,51 @@ def apply(review, context, objects, path):
     patch.append({'op': 'replace', 'path': '/spec/template', 'value': updated['spec']['template']})
     command(['kubectl', '-n', 'onap', 'patch', 'deployment/'+sms.NAME, '--type=json', '-p', json.dumps(patch)])
     command(['kubectl', '-n', 'onap', 'rollout', 'status', 'deployment/'+sms.NAME, '--timeout=15m'], timeout=930)
+    return finish(review, context, objects, path)
+
+
+def finish(review, context, objects, path):
+    """Finish an already rolled exact template. Never restart/reissue/replay."""
+    directory = path.parent/(path.stem+'-apply')
+    preservation = directory/'preservation.json'
+    files = json.loads(preservation.read_text())['files_sha256'].copy()
+    if not all(Path(n).name == n and hashlib.sha256((directory/n).read_bytes()).hexdigest() == d for n, d in files.items()):
+        raise ValueError('SMS original preservation changed')
+    files['preservation.json'] = hashlib.sha256(preservation.read_bytes()).hexdigest()
+    def save(name, value):
+        blob = (json.dumps(value, indent=2)+'\n').encode()
+        private_write(directory/name, blob); files[name] = hashlib.sha256(blob).hexdigest()
+    if (directory/'result.json').exists(): raise ValueError('SMS repair already accepted; do not repeat it')
+    server, service, old_job = objects
+    for kind, obj in zip(('Deployment', 'Service', 'Job'), objects):
+        expected = review['targets'][kind]
+        if obj['metadata']['uid'] != expected['uid'] or digest(obj['spec']) != expected['spec_sha256']:
+            raise ValueError('SMS original review objects differ')
+    verified = fresh.verify_context(CONTEXT)
+    if (verified != context or hashlib.sha256(CONTEXT.read_bytes()).hexdigest() != review['context_sha256']
+            or digest(sms.config(context)) != review['helper_sha256']
+            or hashlib.sha256(Path(review['rehearsal']).read_bytes()).hexdigest() != review['rehearsal_sha256']):
+        raise ValueError('SMS original context/helper/rehearsal changed')
+    if protection() != review['protected']: raise ValueError('SMS protected state changed before finish')
+    # Recheck the accepted operator and every non-replaced dependency.
+    memory, gate = recovery.resume_gate.acceptance_record('/local/setup/phase3-smo/compatibility')
+    operator = json.loads(command(['kubectl', '-n', 'strimzi-system', 'get', 'deployment/strimzi-cluster-operator', '-o', 'json']))
+    operator_pods = json.loads(command(['kubectl', '-n', 'strimzi-system', 'get', 'pods', '-o', 'json']))['items']
+    sample = recovery.resume_gate.compat.operator_sample(operator, operator_pods, memory)
+    if sample != review['operator'] or any(sample[k] != gate['observations'][-1][k] for k in sample):
+        raise ValueError('Operator changed before SMS verification finish')
+    previous_pod_uid = json.loads((directory/'server-pod-before.json').read_text())['metadata']['uid']
+    dependencies = recovery.ready_pods(get('pods')['items'], ('aaf-locate', 'aaf-cm', 'aaf-service',
+        'aaf-sms-vault', 'aaf-sms-vault-backend', 'aaf-sms-quorumclient', 'dcae-ves-collector'), get('statefulsets')['items'])
+    if dependencies != [d for d in review['dependencies'] if d.get('uid') != previous_pod_uid]:
+        raise ValueError('Non-replaced SMS dependency changed')
     current = get('deployment/'+sms.NAME)
-    if current['metadata']['uid'] != server['metadata']['uid']: raise ValueError('SMS Deployment UID changed')
+    if (current['metadata']['uid'] != server['metadata']['uid']
+            or current['metadata']['generation'] != server['metadata']['generation']+1
+            or digest(current['spec']['template']) != review['new_template_sha256']
+            or current['status'].get('observedGeneration') != current['metadata']['generation']
+            or any(current['status'].get(k) != 1 for k in ('replicas', 'updatedReplicas', 'readyReplicas'))):
+        raise ValueError('SMS finish is limited to the exact already-rolled template')
     sms.verify(current, context)
     deadline = time.monotonic()+180; stable_uid = None; stable_since = None; leaf = None
     while True:

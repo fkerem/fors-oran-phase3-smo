@@ -76,9 +76,20 @@ def patch_deployment(resource, context):
 
 
 def crypto_initializer(container):
+    # Admission adds this projected token mount to Pods, not controller
+    # templates. Ignore only that exact standard read-only mount shape.
+    mounts = []
+    injected = 0
+    for mount in container.get('volumeMounts', []):
+        if (mount.get('mountPath') == '/var/run/secrets/kubernetes.io/serviceaccount'
+                and mount.get('name', '').startswith('kube-api-access-')
+                and mount.get('readOnly') is True and set(mount) == {'name', 'mountPath', 'readOnly'}):
+            injected += 1
+        else:
+            mounts.append(mount)
     return (container.get('name') == INIT and container.get('image') == CONFIG_IMAGE
             and container.get('command') == COMMAND and not container.get('args')
-            and container.get('volumeMounts') == [
+            and injected <= 1 and mounts == [
                 {'mountPath': '/opt/app/osaaf', 'name': NAME+'-aaf-config'},
                 {'name': 'phase3-sms', 'mountPath': '/phase3-sms', 'readOnly': True},
                 {'name': 'phase3-sms-attempt', 'mountPath': '/phase3-sms-attempt'}])

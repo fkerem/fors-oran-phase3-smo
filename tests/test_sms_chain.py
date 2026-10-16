@@ -98,6 +98,20 @@ class SmsContractTests(unittest.TestCase):
         self.assertNotIn('phase3-pki', json.dumps(init))
         self.assertNotIn('agent.sh', json.dumps(init))
 
+    def test_pod_admission_token_mount_is_allowed_but_arbitrary_mounts_are_not(self):
+        result = sms.patch_deployment(deployment(), self.context)
+        pod = {'kind': 'Pod', 'metadata': result['spec']['template']['metadata'], 'spec': result['spec']['template']['spec']}
+        init = pod['spec']['initContainers'][0]
+        token = {'name': 'kube-api-access-fixture', 'mountPath': '/var/run/secrets/kubernetes.io/serviceaccount', 'readOnly': True}
+        init['volumeMounts'].append(token)
+        self.assertEqual(sms.config(self.context), sms.verify(pod, self.context))
+        for change in ({'readOnly': False}, {'name': 'unreviewed-volume'}, {'subPath': 'unreviewed'}):
+            original = token.copy(); token.update(change)
+            with self.assertRaises(ValueError): sms.verify(pod, self.context)
+            token.clear(); token.update(original)
+        init['volumeMounts'].append(token.copy())
+        with self.assertRaises(ValueError): sms.verify(pod, self.context)
+
 
 repair_spec = importlib.util.spec_from_file_location('sms_repair_tests', ROOT/'bin/phase3-sms-repair.py')
 repair = importlib.util.module_from_spec(repair_spec); repair_spec.loader.exec_module(repair)
@@ -147,6 +161,16 @@ class SmsRepairGuardTests(unittest.TestCase):
         self.assertNotIn("'delete'", source)
         self.assertNotIn("'suspend', 'value': False", source)
         self.assertNotIn('insecure', source.lower())
+
+    def test_finish_contains_no_deployment_mutation_replay_or_certificate_request(self):
+        import inspect
+        source = inspect.getsource(repair.finish)
+        self.assertNotIn("'patch', 'deployment/'", source)
+        self.assertNotIn("'create'", source)
+        self.assertNotIn('patch_deployment(', source)
+        self.assertNotIn('agent.sh', source)
+        self.assertIn("'new_template_sha256'", source)
+        self.assertIn("'preservation.json'", source)
 
 
 if __name__ == '__main__': unittest.main()
