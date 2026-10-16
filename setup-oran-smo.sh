@@ -152,9 +152,13 @@ for name in ('nonrtric','ru-du-simulators'):
         raise SystemExit('Prepared continuation chart differs from reviewed cache')
 PY
 fi
+PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/tools/phase3-oru-readiness.py" fresh \
+    --context "$PHASE3_FRESH_CONTEXT" --expected-slice "$(geni-get slice_urn)"
 helm upgrade --install oran-nonrtric "$work/prepared/nonrtric.tgz" \
     --namespace nonrtric --create-namespace --post-renderer "$renderer" \
     -f "$values/oran-override.yaml" --wait --timeout 30m
+PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/tools/phase3-oru-readiness.py" verify-fresh \
+    --context "$PHASE3_FRESH_CONTEXT" --expected-slice "$(geni-get slice_urn)" --bind-fresh-identity
 helm upgrade --install oran-simulator "$work/prepared/ru-du-simulators.tgz" \
     --namespace network --create-namespace --post-renderer "$renderer" \
     -f "$values/network-simulators-override.yaml" \

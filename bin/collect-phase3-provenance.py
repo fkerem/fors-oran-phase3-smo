@@ -112,6 +112,13 @@ def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
         entry["gate"] = json.loads(gate.read_text()) if gate.exists() else {"ready": False}
         operator_compatibility.append(entry)
     errors = assess(nodes, workloads, pods, pvcs, releases, services, kafkas, jobs)
+    oru_current=None
+    if Path(context_path).is_file() and json.loads(Path(context_path).read_text()).get('oru_readiness_contract')==1:
+        result=subprocess.run(['python3',str(ROOT/'tools/phase3-oru-readiness.py'),'verify-fresh',
+            '--context',str(context_path),'--expected-slice',json.loads(Path(context_path).read_text())['slice_urn']],
+            capture_output=True,timeout=180)
+        oru_current={'verified':result.returncode==0}
+        if result.returncode:errors.append('O-RU readiness current identity/RBAC verification is not established')
     preload_verified = False
     preload_current = None
     dmaap_acceptance = None
@@ -157,6 +164,7 @@ def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
             "kafkas": kafkas, "jobs": jobs, "operator_compatibility": operator_compatibility,
             "sms_preload_current": preload_current,
             "dmaap_current":dmaap_current,
+            "oru_readiness_current":oru_current,
             "source_dependencies": dependencies, "chart_compatibility": compatibility,
             "readiness_errors": errors}
 

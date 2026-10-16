@@ -187,6 +187,7 @@ def prepare(directory, slice_urn):
                'storage_node':storage,'pki_directory':str(pki),'root_sha256':record['root_sha256'],
                'secret_name':'phase3-lab-pki-'+record['root_sha256'][:16],
                'storage_preflight':storage_check,'sms_backend_contract':1,'sms_preload_contract':1,'dmaap_contract':1,
+               'oru_readiness_contract':1,
                'rehearsal_sha256':hashlib.sha256((directory/'rehearsal.json').read_bytes()).hexdigest()}
     for namespace in ('onap','nonrtric','network'):
         existing = kubectl('get','namespace',namespace,'--ignore-not-found','-o','name').strip()
@@ -213,6 +214,8 @@ def prepare(directory, slice_urn):
 
 def verify_context(path, require_empty=False):
     context = json.loads(Path(path).read_text())
+    if 'oru_readiness_contract' in context and (type(context['oru_readiness_contract']) is not int or context['oru_readiness_contract']!=1):
+        raise ValueError('Unreviewed O-RU readiness contract')
     if context.get('schema')!=1 or context.get('baseline')!='fresh-isolated-lab-pki':
         raise ValueError('Unreviewed fresh-install context')
     if 'sms_preload_contract' in context and (

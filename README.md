@@ -216,6 +216,47 @@ do not establish exactly-once execution or total downstream write counts.
 
 ## New experiments: fresh-start compatibility baseline
 
+### O-RU cross-namespace readiness
+
+New contexts set `oru_readiness_contract=1`. After ONAP acceptance and before
+non-RT RIC installation, the profile creates the dedicated
+`onap/phase3-oru-aaf-readiness` Role and RoleBinding. Only
+`nonrtric:oran-oru-app-read` receives ONAP Pod listing, GET of the three current
+AAF ReplicaSet status resources and GET of the three AAF Deployments by name.
+No Secrets, exec, write, watch or cluster-wide grant is added. The app shares
+this ServiceAccount token and therefore retains those metadata reads. The
+ineffective chart-local `oran-read` reference is left unchanged; no broad Role
+is manufactured to satisfy it. Changed AAF owner chains require review.
+
+Retained allocations never enter the automatic fresh mode. Stage the tested
+public revision separately and retain the clean `f952ce5` acceptance checkout:
+
+```sh
+python3 tools/phase3-oru-readiness.py audit --expected-slice "$slice" \
+  --accepted-checkout /var/tmp/ACCEPTED-F952CE5-CHECKOUT \
+  --review-file /local/setup/phase3-smo/fresh-start/UNIQUE-oru-review.json
+# Review the private binding, then use the same arguments with action apply.
+# Use --allow-readiness-only-restarts on audit/apply ONLY after explicit review
+# of continuous full readiness logs and the pinned read-only helper source.
+python3 tools/phase3-oru-readiness.py continue --expected-slice "$slice" \
+  --accepted-checkout /var/tmp/ACCEPTED-F952CE5-CHECKOUT
+```
+
+Reviews expire after 30 minutes. Apply retains an exclusive latch, creates
+only the two scoped RBAC objects, verifies allowed/denied operations and waits
+for the same Pod. Agent/app execution before apply, restart, failed retrieval,
+missing history, lost write responses or changed identities stop without
+retry/reset. Readiness-only restart eligibility is an explicit opt-in and
+does not permit an agent/app retry. Raw evidence remains private.
+
+Continuation requires a non-hook manifest-identical render before one
+`helm upgrade --no-hooks` of the retained failed release. No force, uninstall,
+automatic rollback, Pod-template change or release-status patch is allowed.
+It then installs only the unattempted NTS release and runs normal readiness/
+provenance checks using the original accepted code. Original receipts, code
+bindings and the uncertain DMAAP journal are not rewritten. A new failure
+requires review; never replay the setup driver or accept again after a latch.
+
 **Update/Pull this repository-backed profile in POWDER and compare the full
 selected commit with the published `main` before instantiation.** Pushing to
 GitHub does not update a portal-cached profile revision. Keep the three-d740
