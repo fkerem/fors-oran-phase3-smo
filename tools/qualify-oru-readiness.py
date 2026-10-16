@@ -60,6 +60,7 @@ def qualify(blob):
     assert positive==[('list','pods','onap',None),('get','replicasets/status','onap','synthetic-rs'),
                       ('get','deployments','onap','onap-aaf-locate')]
     return {'schema':1,'passed':True,'source_sha256':policy.SOURCE_SHA256,'positive_api_calls':positive,
+        'image':IMAGE,'wrapper_sha256':hashlib.sha256(wrapper_path.read_bytes()).hexdigest(),
         'denied_read_control':True,'live_api_contacted':False,'synthetic_material_only':True,
         'fixture_difference':'Synthetic Kubernetes client responses; exact pinned helper functions and existing wrapper.'}
 

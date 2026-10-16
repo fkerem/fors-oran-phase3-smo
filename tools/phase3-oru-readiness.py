@@ -149,7 +149,10 @@ def history(path,gate,pod,allow_restarts):
             raise contract.Blocked('Incomplete readiness-only termination history')
         first=gate.timestamp(lines[0].split()[0]);last=gate.timestamp(lines[-1].split()[0])
         start=gate.timestamp(terminated['startedAt']);end=gate.timestamp(terminated['finishedAt'])
-        if (abs((first-start).total_seconds())>3 or not 0<=(end-last).total_seconds()<=5
+        # The pinned helper imports Kubernetes before installing its logger;
+        # observed imports take 14-16 seconds. No application code runs there.
+        if (not 0<=(first-start).total_seconds()<=30 or not 0<=(end-last).total_seconds()<=5
+                or 'Checking if aaf-locate is ready' not in lines[0]
                 or b'403' not in logs or b'Forbidden' not in logs):
             raise contract.Blocked('Readiness log does not cover the full denied-read attempt')
         covered.setdefault(index,record)
@@ -160,6 +163,17 @@ def history(path,gate,pod,allow_restarts):
 def workload_binding():
     items=get('deployments,statefulsets,pvc',namespace='nonrtric')['items']
     return {o['kind']+'/'+o['metadata']['name']:{'uid':o['metadata']['uid'],'spec_sha256':contract.sha(o['spec'])} for o in items}
+
+
+def qualification(gate,filename):
+    record=read(filename)
+    if (record.get('schema')!=1 or record.get('passed') is not True
+            or record.get('image')!=contract.IMAGE or record.get('source_sha256')!=contract.SOURCE_SHA256
+            or record.get('wrapper_sha256')!=digest(gate.ROOT/'bin/phase3-readiness-wrapper.py')
+            or record.get('denied_read_control') is not True or record.get('live_api_contacted') is not False
+            or record.get('synthetic_material_only') is not True):
+        raise contract.Blocked('Pinned readiness qualification unavailable or stale')
+    return digest(filename)
 
 
 def chart_binding(gate,path):
@@ -236,6 +250,7 @@ def review_binding(gate,path,expected_slice,allow_restarts):
                 verify_archive(archive);stopped.append(archive)
     if len(stopped)!=1:raise contract.Blocked('Preserved owned-waiter stop evidence missing or ambiguous')
     return {'schema':1,'protected':protected(gate,path,expected_slice),'targets':dependencies,
+        'qualification_sha256':qualification(gate,ROOT/'synthetic-qualification.json'),
         'pod_uid':pod['metadata']['uid'],'pod_name':pod['metadata']['name'],'pod_spec_sha256':contract.sha(pod['spec']),
         'readiness_restarts':count,'readiness_history':archives,'waiter_stop_archive':stopped[0],
         'serviceaccount_uid':sa['metadata']['uid'],
@@ -387,13 +402,17 @@ def continue_startup(gate,path,expected_slice):
 def fresh(gate,path,expected_slice):
     context=read(path);contract.fresh_contract(context)
     baseline=protected(gate,path,expected_slice)
+    qual=path.parent/(PREFIX+'qualification.json')
+    if qual.exists():raise contract.Blocked('Fresh readiness qualification already attempted')
+    command([sys.executable,str(ROOT/'tools/qualify-oru-readiness.py'),'--output',str(qual)],timeout=180)
+    qualified=qualification(gate,qual)
     if get('deployments,statefulsets,pods',namespace='nonrtric')['items']:
         raise contract.Blocked('Fresh non-RT RIC installation already attempted')
     latch=path.parent/(PREFIX+'fresh-attempt.json')
     if latch.exists():raise contract.Blocked('Fresh readiness RBAC already attempted')
     dep=targets();objects=contract.resources(dep)
     if any(get(o['kind'],contract.NAME,optional=True) for o in objects):raise contract.Blocked('Fresh RBAC name collision')
-    write(latch,{'schema':1,'protected':baseline,'targets':dep})
+    write(latch,{'schema':1,'protected':baseline,'targets':dep,'qualification_sha256':qualified})
     created={}
     for o in objects:
         actual=json.loads(command(['kubectl','create','-f','-','-o','json'],contract.canonical(o)))

@@ -208,9 +208,10 @@ class WorkflowTests(unittest.TestCase):
         gate.write(self.path.parent/'onap-acceptance.json',{})
         with patch.object(gate,'read',return_value={'oru_readiness_contract':1}), \
              patch.object(gate,'protected',return_value={}),patch.object(gate,'targets',return_value=targets()), \
+             patch.object(gate,'qualification',return_value='synthetic'), \
              patch.object(gate,'get',side_effect=[{'items':[]},{'existing':True}]),patch.object(gate,'command') as create:
             with self.assertRaisesRegex(ValueError,'collision'):gate.fresh(None,self.path,'slice')
-            create.assert_not_called()
+            self.assertFalse(any('create' in c.args[0] for c in create.call_args_list))
 
     def test_duplicate_retained_continuation_is_not_retried(self):
         gate.write(self.path.parent/(gate.PREFIX+'continuation-attempt.json'),{})
