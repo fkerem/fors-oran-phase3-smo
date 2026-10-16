@@ -28,7 +28,10 @@ def check(pki, directory, run, docker):
     run(docker+['run', '--rm', '--network', 'none', '--user', str(os.getuid())+':'+str(os.getgid()),
         '--mount', 'type=bind,src='+str(classes)+',dst=/classes',
         '--mount', 'type=bind,src='+str(ROOT/'tools/Phase3PkiTlsProbe.java')+',dst=/checks/Phase3PkiTlsProbe.java,readonly',
-        '--entrypoint', 'javac', CONFIG_IMAGE, '--release', '8', '-d', '/classes', '/checks/Phase3PkiTlsProbe.java'], directory=directory)
+        # The pinned image contains the compiler module used by source launch,
+        # but not a javac executable. Invoke that same compiler module directly.
+        '--entrypoint', 'java', CONFIG_IMAGE, '-m', 'jdk.compiler/com.sun.tools.javac.Main',
+        '--release', '8', '-d', '/classes', '/checks/Phase3PkiTlsProbe.java'], directory=directory)
     # All network activity during these controls is in-container loopback only.
     script = '''set -eu
 java -cp /classes Phase3PkiTlsProbe /phase3-pki jks-only

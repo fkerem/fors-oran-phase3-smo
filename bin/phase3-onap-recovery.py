@@ -213,7 +213,10 @@ def inspect(target, expected_slice, rehearsal=None):
             raise ValueError('Exact-image isolated VES rehearsal receipt is required')
         receipt = json.loads(Path(rehearsal).read_text())
         control = receipt.get('ves_rehearsal', {})
-        if not receipt.get('passed') or not control.get('passed') or control.get('image') != phase3_ves.IMAGE:
+        if (receipt.get('passed') is not True or control.get('passed') is not True
+                or control.get('image') != phase3_ves.IMAGE
+                or control.get('java8_tls_positive_and_negative_controls') is not True
+                or control.get('openssl_conversion') is not True):
             raise ValueError('VES rehearsal did not pass with the reviewed image')
         record['rehearsal'] = {'path': str(Path(rehearsal).resolve()), 'sha256': hashlib.sha256(Path(rehearsal).read_bytes()).hexdigest()}
         record['dependencies'] = ready_pods(pods, ('aaf-locate', 'aaf-cm', 'aaf-service'))
@@ -280,7 +283,13 @@ def apply(review, path):
         raise ValueError('State changed during evidence preservation')
     if target == 'ves':
         cm = phase3_ves.config(context)
-        command(['kubectl', 'create', '-f', '-'], json.dumps(cm).encode())
+        existing = command(['kubectl', '-n', 'onap', 'get', 'configmap/'+cm['metadata']['name'], '--ignore-not-found', '-o', 'json']).strip()
+        if existing:
+            actual = json.loads(existing)
+            if any(actual.get(k) != cm.get(k) for k in ('data', 'binaryData', 'immutable')):
+                raise ValueError('Existing VES compatibility ConfigMap differs from review')
+        else:
+            command(['kubectl', 'create', '-f', '-'], json.dumps(cm).encode())
         updated = phase3_ves.patch_deployment(obj, context)
         patch = [{'op': 'test', 'path': '/metadata/uid', 'value': review['uid']},
                  {'op': 'test', 'path': '/metadata/resourceVersion', 'value': review['resource_version']},
