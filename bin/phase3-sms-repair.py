@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTEXT = Path('/local/setup/phase3-smo/fresh-start/context.json')
 spec = importlib.util.spec_from_file_location('sms_fresh_repair', ROOT/'bin/phase3-fresh-start.py')
 fresh = importlib.util.module_from_spec(spec); spec.loader.exec_module(fresh)
+spec = importlib.util.spec_from_file_location('sms_existing_recovery', ROOT/'bin/phase3-onap-recovery.py')
+recovery = importlib.util.module_from_spec(spec); spec.loader.exec_module(recovery)
 
 
 def digest(value):
@@ -55,7 +57,10 @@ def held_job():
 
 def inspect(slice_urn, rehearsal):
     context = fresh.verify_context(CONTEXT)
-    if context['slice_urn'] != slice_urn: raise ValueError('SMS repair allocation mismatch')
+    if context['slice_urn'] != slice_urn or command(['hostname']).decode().strip().split('.')[0] != 'node-0':
+        raise ValueError('SMS repair allocation mismatch')
+    if any(Path('/local/setup', n).exists() for n in ('setup-driver-done', 'setup-oran-smo-done')):
+        raise ValueError('Completed setup requires a different review')
     nodes = json.loads(command(['kubectl', 'get', 'nodes', '-o', 'json']))['items']
     if not all(any(c['type'] == 'Ready' and c['status'] == 'True' for c in n['status']['conditions']) for n in nodes):
         raise ValueError('Allocation Nodes are not all Ready')
@@ -64,9 +69,20 @@ def inspect(slice_urn, rehearsal):
             or record.get('preload_sha256') != sms.PRELOAD_SHA256
             or record.get('live_api_contacted') is not False
             or record.get('live_preload_authorized') is not False
+            or record.get('chain_script_sha256') != hashlib.sha256((ROOT/'bin/phase3-sms-chain.sh').read_bytes()).hexdigest()
             or record.get('chain_controls') != {k: True for k in ('valid-stale-tail', 'wrong-root', 'wrong-hostname', 'expired-leaf')}):
         raise ValueError('Missing reviewed exact-image SMS rehearsal')
     job = held_job(); server = get('deployment/'+sms.NAME); service = get('service/'+sms.SERVICE)
+    if any(r['metadata'].get('annotations', {}).get('meta.helm.sh/release-name') != 'onap-aaf' for r in (job, server, service)):
+        raise ValueError('SMS Helm ownership differs from review')
+    memory, gate = recovery.resume_gate.acceptance_record('/local/setup/phase3-smo/compatibility')
+    operator = json.loads(command(['kubectl', '-n', 'strimzi-system', 'get', 'deployment/strimzi-cluster-operator', '-o', 'json']))
+    operator_pods = json.loads(command(['kubectl', '-n', 'strimzi-system', 'get', 'pods', '-o', 'json']))['items']
+    sample = recovery.resume_gate.compat.operator_sample(operator, operator_pods, memory)
+    if sample is None or any(sample[k] != gate['observations'][-1][k] for k in sample):
+        raise ValueError('Operator identity/restarts changed after its one-hour gate')
+    dependencies = recovery.ready_pods(get('pods')['items'], ('aaf-locate', 'aaf-cm', 'aaf-service',
+        'aaf-sms', 'aaf-sms-vault', 'aaf-sms-vault-backend', 'aaf-sms-quorumclient', 'dcae-ves-collector'), get('statefulsets')['items'])
     if (server['spec'].get('replicas') != 1 or server['status'].get('readyReplicas') != 1
             or server['status'].get('observedGeneration') != server['metadata']['generation']
             or server['spec'].get('strategy') != {'type': 'RollingUpdate', 'rollingUpdate': {'maxSurge': '25%', 'maxUnavailable': '25%'}}):
@@ -76,6 +92,7 @@ def inspect(slice_urn, rehearsal):
         for kind, r in [('Deployment', server), ('Service', service), ('Job', job)]}
     review = {'schema': 1, 'operation': 'sms-public-chain-routing-only', 'slice_urn': slice_urn,
         'root_sha256': context['root_sha256'], 'targets': targets, 'protected': protection(),
+        'context_sha256': hashlib.sha256(CONTEXT.read_bytes()).hexdigest(), 'operator': sample, 'dependencies': dependencies,
         'rehearsal': str(Path(rehearsal).resolve()), 'rehearsal_sha256': hashlib.sha256(Path(rehearsal).read_bytes()).hexdigest(),
         'helper_sha256': digest(sms.config(context)), 'new_template_sha256': digest(updated['spec']['template']),
         'new_selector': narrowed['spec']['selector'], 'preload_replay_authorized': False}

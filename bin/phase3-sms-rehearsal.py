@@ -129,6 +129,7 @@ def check(directory, run, docker):
             # Only the explicitly created, uniquely named isolated fixture.
             subprocess.run(docker+['rm', '-f', container], capture_output=True, timeout=30)
     record = {'schema': 1, 'passed': True, 'image': sms.IMAGE, 'preload_sha256': sms.PRELOAD_SHA256,
+        'chain_script_sha256': hashlib.sha256((ROOT/'bin/phase3-sms-chain.sh').read_bytes()).hexdigest(),
         'chain_controls': chain_controls, 'preload_characterization': observations,
         'network': 'none; two containers share loopback only; no published ports',
         'live_api_contacted': False, 'live_preload_authorized': False,
