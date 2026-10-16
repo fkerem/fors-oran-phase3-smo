@@ -41,6 +41,9 @@ def check(directory='/local/setup/phase3-smo/compatibility'):
     releases=json.loads(run(['helm','list','--all','-n','onap','-o','json']))
     def items(kind):return [r for r in resources if r['kind']==kind]
     onap_ready(get('nodes')['items'],items('Deployment'),items('StatefulSet'),items('Job'),items('PersistentVolumeClaim'),get('kafkas.kafka.strimzi.io','onap')['items'],releases)
+    backend_spec=importlib.util.spec_from_file_location('resume_sms_backend',ROOT/'phase3-sms-backend.py')
+    backend_gate=importlib.util.module_from_spec(backend_spec);backend_spec.loader.exec_module(backend_gate)
+    backend_gate.verify_acceptance('/local/setup/phase3-smo/fresh-start/context.json')
     return {'ready':True,'operator':sample,'runtime':runtime,'operator_stability_seconds':gate['stability_seconds']}
 
 if __name__=='__main__':

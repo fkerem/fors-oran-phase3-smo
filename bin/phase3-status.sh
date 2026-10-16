@@ -5,16 +5,27 @@ kubectl get nodes
 kubectl get pods -A
 kubectl get pvc -A
 helm list --all --all-namespaces
-python3 - <<'PY'
-import json
+python3 - "$SRC" <<'PY'
+import importlib.util,json,sys
 from pathlib import Path
 root=Path('/local/setup/phase3-smo/fresh-start')
-for name in ('rehearsal.json','onap-acceptance.json'):
+for name in ('rehearsal.json','sms-backend-acceptance.json','onap-acceptance.json'):
     path=root/name
     if path.is_file():
         record=json.loads(path.read_text())
         print('Fresh-start %s: passed=%s; full SMO acceptance is separate' % (name,record.get('passed')))
     else:
         print('Fresh-start %s: NOT ESTABLISHED' % name)
+if (root/'sms-backend-acceptance.json').is_file():
+    sys.path.insert(0,str(Path(sys.argv[1])/'bin'))
+    spec=importlib.util.spec_from_file_location('status_sms_backend',Path(sys.argv[1])/'bin/phase3-sms-backend.py')
+    gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
+    try:
+        if gate.verify_acceptance(root/'context.json') is None:
+            raise ValueError('Receipt is not a qualified fresh context')
+    except (ValueError,OSError,RuntimeError,KeyError):
+        raise SystemExit('SMS backend current bindings: NOT ESTABLISHED; no readiness claim')
+    print('SMS backend current bindings: VERIFIED; preload remains separate')
+print('SMS backend acceptance does not authorize preload or establish full SMO/certificate-test readiness')
 PY
 python3 "$SRC/bin/collect-phase3-provenance.py" --require-ready

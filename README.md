@@ -1,5 +1,58 @@
 # POWDER Phase 3 SMO profile
 
+## SMS backend custody gate
+
+New allocations mount their own public lab root into the three quorum clients
+before the first SMS/Vault startup. SMS, quorum, Vault 1.3.3 and Consul 1.7.1
+use exact reviewed image digests. This fixes the quorum clients' packaged-root
+mismatch; it does not disable hostname/certificate verification or add mutual
+TLS support to the stock quorum binary.
+
+An initialized Vault can be sealed while all its Pods say Ready. The stock SMS
+process initially holds bootstrap authority in memory: restarting it before
+the three encrypted shards **and** SMS AppRole credentials are persisted can
+lose that handoff. Merely fixing TLS afterward does not recreate those keys.
+Do not restart SMS/quorum to try to clear this state, reinitialize Vault, reset
+Consul/PVC contents, or regenerate root authority. Preserve the allocation and
+seek a separate recovery review. A new clean allocation is a separate choice.
+
+`python3 bin/phase3-sms-backend.py audit --expected-slice URN --output NEW_JSON
+--preserve-directory NEW_PRIVATE_DIRECTORY` preserves metadata and private
+logs/manifests without recovery. Run it as one shell command. Exit 2 means
+audit-only/blocked, not permission to preload. It does not retrieve live shard
+or backend credential values; raw logs remain private.
+
+Fresh setup automatically rehearses the pinned binaries in a loopback-only
+Docker fixture, checks that all five SMS/Vault/quorum backing directories are
+empty, and installs a separate immutable public-trust ConfigMap. After initial
+ONAP deployment, `wait-fresh` requires the existing one-hour operator gate,
+verified SMS TLS, three distinct cryptographically validated persisted recovery
+sets, an unsealed Vault, and persisted working scoped AppRole credentials.
+Normal first-use SMS bootstrap is limited to one journaled GET; no domain or
+secret preload POST is made. A failure never repeats that bootstrap request,
+resets data, or fabricates completion. Authentication tokens are short-lived,
+kept private and revoked after metadata checks; no root privileges are added.
+The stock quorum binary retains its normal polling; a failed gate stops setup,
+not those running containers, and is not an exactly-once execution guarantee.
+
+Acceptance binds allocation/Pod/PVC/PV identities, image/trust pins and private
+material bindings, and observes 120 restart-free seconds. The receipt is
+`fresh-start/sms-backend-acceptance.json`; status and continuation recheck its
+bindings. Missing/incomplete custody, drift, restart or timeout stops setup.
+`wait-fresh` refuses retained contexts without the new empty-storage proof.
+Do not invoke it as a recovery command for an initialized old allocation.
+
+The exact-image fixture covers clean bootstrap and restart/reseal recovery,
+insufficient quorum, missing/invalid/duplicate recovery material, interruptions
+before shard or AppRole custody, and wrong/missing CA, hostname and expiry
+rejection. It uses synthetic material and disposable storage, no live API and
+no published ports. Fixture ownership is not a live filesystem-permissions
+equivalence claim, and these tests do not prove a complete new deployment.
+
+**A backend pass still leaves the stock preload held.** The separately reviewed
+guarded preload client is not implemented by this backend fix; full SMO and
+certificate testing remain gated as described below.
+
 ## SMS safety gate (current stopping point)
 
 New profiles repair SMS's served public chain using this allocation's existing
@@ -102,6 +155,8 @@ installation. Before ONAP creation it:
   identity and refuses noncanonical or nonempty backing directories before
   first install. It creates, deletes and migrates nothing on the peer.
   This is not data migration or reuse of a previous allocation's disks.
+  SMS auth, Consul and all three quorum backing directories must also be empty;
+  existing data is never adopted as a fresh initialization.
 
 Every new ONAP Job uses `backoffLimit: 0` and `restartPolicy: Never`. Failures
 stop acceptance rather than replaying initializers. The post-ONAP gate
@@ -111,7 +166,7 @@ agent initializers. Only then may non-RT RIC and NTS installation continue.
 The final full-SMO provenance gate still controls the completion marker.
 
 The private receipts are under `/local/setup/phase3-smo/fresh-start/`:
-`rehearsal.json`, `context.json` and, after live ONAP acceptance,
+`rehearsal.json`, `context.json`, backend handoff/acceptance records and, after live ONAP acceptance,
 `onap-acceptance.json`. Do **not** upload that directory: it also holds keys,
 passwords and private bootstrap logs. `bin/phase3-status.sh` prints only a
 bounded receipt status, not the private payloads. A partially started install

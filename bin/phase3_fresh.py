@@ -6,6 +6,7 @@ from pathlib import Path
 from phase3_lab_pki import CONFIG_IMAGE, AGENT_IMAGE, trust_config
 import phase3_ves
 import phase3_sms
+import phase3_sms_backend
 
 ROOT = Path(__file__).resolve().parents[1]
 READINESS_IMAGE = 'nexus3.onap.org:10001/onap/oom/readiness@sha256:317c8a361ae73750f4d4a1b682c42b73de39083f73228dede31fd68b16c089db'
@@ -60,6 +61,9 @@ def overlay(resources, context):
         kind = resource.get('kind')
         meta = resource.get('metadata',{})
         name = meta.get('name','')
+        if context.get('sms_backend_contract') == 1:
+            phase3_sms_backend.check_stock_config(resource)
+            resource.update(phase3_sms_backend.patch(resource, context))
         if kind == 'Deployment' and name == phase3_sms.NAME:
             resource.update(phase3_sms.patch_deployment(resource, context))
         elif kind == 'Service' and name == phase3_sms.SERVICE:

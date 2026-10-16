@@ -17,6 +17,7 @@ from phase3_fresh import READINESS_IMAGE, helper_config, select_storage_node
 from phase3_lab_pki import CONFIG_IMAGE, AGENT_IMAGE, generate, private_write, secret
 import phase3_ves
 import phase3_sms
+import phase3_sms_backend
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -84,6 +85,9 @@ def offline_rehearsal(directory, experiment):
     sms_spec = importlib.util.spec_from_file_location('sms_rehearsal', ROOT/'bin/phase3-sms-rehearsal.py')
     sms_rehearsal = importlib.util.module_from_spec(sms_spec); sms_spec.loader.exec_module(sms_rehearsal)
     sms_result = sms_rehearsal.check(directory/'sms-isolated', run, docker_prefix())
+    backend_spec = importlib.util.spec_from_file_location('sms_backend_rehearsal', ROOT/'bin/phase3-sms-backend-rehearsal.py')
+    backend_rehearsal = importlib.util.module_from_spec(backend_spec); backend_spec.loader.exec_module(backend_rehearsal)
+    backend_result = backend_rehearsal.check(directory/'sms-backend-isolated', docker_prefix())
     run(docker_prefix()+['run','--rm','--network','none',
         '--mount','type=bind,src='+str(pki)+',dst=/phase3-pki,readonly',
         '--mount','type=bind,src='+str(ROOT/'tools/Phase3PkiTlsProbe.java')+',dst=/checks/Phase3PkiTlsProbe.java,readonly',
@@ -116,6 +120,7 @@ def offline_rehearsal(directory, experiment):
               'isolated_java_tls_controls':True,
               'ves_rehearsal':ves_result,
               'sms_rehearsal':sms_result,
+              'sms_backend_rehearsal':backend_result,
               'full_smo_tested':False,'network_during_bootstrap':'none'}
     private_write(directory/'rehearsal.json',(json.dumps(record,indent=2)+'\n').encode())
     return record
@@ -133,6 +138,9 @@ if actual!=sys.argv[1]:raise SystemExit('Storage peer allocation mismatch')
 paths=['/storage/nfs/deployment-1/onap/mariadb-galera/data-0',
        '/storage/nfs/deployment-1/onap/policy/maria/data-0',
        '/storage/nfs/deployment-1/onap/elastic-master-0']
+if len(sys.argv)>2 and sys.argv[2]=='sms-backend-v1':
+    paths+=['/storage/nfs/deployment-1/onap/sms/'+p for p in
+            ('auth','consul/data-0','quorum/data-0','quorum/data-1','quorum/data-2')]
 records=[]
 for value in paths:
     path=pathlib.Path(value)
@@ -144,10 +152,11 @@ print(json.dumps({'slice_urn':actual,'paths':records}))
 '''
 
 
-def storage_inspection(slice_urn):
+def storage_inspection(slice_urn, include_sms=False):
     # Resolve the new logical peer; its own geni-get must match before filesystem
     # inspection. This command is read-only and never uses an old physical host.
     command='sudo -n python3 - '+shlex.quote(slice_urn)
+    if include_sms: command+=' sms-backend-v1'
     return json.loads(run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=20','node-2',command],
                           data=STORAGE_INSPECTION.encode(),timeout=60))
 
@@ -159,7 +168,7 @@ def prepare(directory, slice_urn):
     storage = select_storage_node(nodes)
     current = {n['metadata']['name']:n['metadata']['uid'] for n in nodes}
     identity = hashlib.sha256(json.dumps([slice_urn,current],sort_keys=True).encode()).hexdigest()
-    storage_check = storage_inspection(slice_urn)
+    storage_check = storage_inspection(slice_urn, include_sms=True)
     # No output from runtime credentials is printed; ownership and image IDs are recorded instead.
     record = offline_rehearsal(directory,identity[:24])
     directory = Path(directory).resolve()
@@ -167,7 +176,7 @@ def prepare(directory, slice_urn):
     context = {'schema':1,'baseline':'fresh-isolated-lab-pki','slice_urn':slice_urn,'node_uids':current,
                'storage_node':storage,'pki_directory':str(pki),'root_sha256':record['root_sha256'],
                'secret_name':'phase3-lab-pki-'+record['root_sha256'][:16],
-               'storage_preflight':storage_check,
+               'storage_preflight':storage_check,'sms_backend_contract':1,
                'rehearsal_sha256':hashlib.sha256((directory/'rehearsal.json').read_bytes()).hexdigest()}
     for namespace in ('onap','nonrtric','network'):
         existing = kubectl('get','namespace',namespace,'--ignore-not-found','-o','name').strip()
@@ -179,6 +188,7 @@ def prepare(directory, slice_urn):
     kubectl('create','-f','-',data=json.dumps(secret(pki,'onap',context['secret_name'])).encode())
     kubectl('create','-f','-',data=json.dumps(phase3_ves.config(context)).encode())
     kubectl('create','-f','-',data=json.dumps(phase3_sms.config(context)).encode())
+    kubectl('create','-f','-',data=json.dumps(phase3_sms_backend.config(context)).encode())
     context['files_sha256'] = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pki.iterdir() if p.is_file()}
     private_write(directory/'context.json',(json.dumps(context,indent=2)+'\n').encode())
     return context
@@ -210,8 +220,15 @@ def verify_context(path, require_empty=False):
         raise ValueError('Runtime PKI Secret changed')
     if require_empty:
         assert_empty_onap()
-        if storage_inspection(context['slice_urn'])!=context['storage_preflight']:
+        if storage_inspection(context['slice_urn'], include_sms=context.get('sms_backend_contract')==1)!=context['storage_preflight']:
             raise ValueError('Backing-directory state changed before first install')
+    if context.get('sms_backend_contract') == 1:
+        rehearsal=json.loads((directory/'rehearsal.json').read_text()).get('sms_backend_rehearsal',{})
+        phase3_sms_backend.require_qualification(rehearsal)
+        expected=phase3_sms_backend.config(context)
+        actual=json.loads(kubectl('get','configmap',expected['metadata']['name'],'-n','onap','-o','json'))
+        if actual.get('immutable') is not True or actual.get('data')!=expected['data']:
+            raise ValueError('Immutable quorum trust helper changed')
     return context
 
 
@@ -242,6 +259,9 @@ def onap_errors(resources):
 
 def wait_onap(path, timeout):
     context=verify_context(path)
+    backend_spec=importlib.util.spec_from_file_location('backend_acceptance',ROOT/'bin/phase3-sms-backend.py')
+    backend_gate=importlib.util.module_from_spec(backend_spec); backend_spec.loader.exec_module(backend_gate)
+    backend_gate.verify_acceptance(path)
     deadline=time.monotonic()+timeout
     while True:
         resources=json.loads(kubectl('get','deployments,statefulsets,jobs','-n','onap','-o','json'))['items']

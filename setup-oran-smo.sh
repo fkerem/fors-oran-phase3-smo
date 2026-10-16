@@ -91,7 +91,7 @@ python3 "$SRC/bin/phase3-image-preflight.py" --manifest "$work/rendered/onap.yam
 python3 "$SRC/bin/phase3-image-rehearsal.py" --manifest "$work/rendered/onap.yaml" --output "$image_attempt/rehearsal.json"
 # A new allocation gets new keys, immutable helpers, and a network-isolated
 # rehearsal before its first ONAP workload. Never rotate an existing install here.
-maybe_install_packages python3-cryptography
+maybe_install_packages python3-cryptography gnupg
 python3 "$SRC/bin/phase3-fresh-start.py" prepare --directory "$work/fresh-start" \
     --slice-urn "$(geni-get slice_urn)"
 export PHASE3_FRESH_CONTEXT="$work/fresh-start/context.json"
@@ -119,6 +119,7 @@ cd "$work"
 python3 "$SRC/bin/phase3-fresh-start.py" verify --context "$PHASE3_FRESH_CONTEXT" --require-empty-onap
 helm -n onap deploy onap unpacked/onap --namespace onap --post-renderer "$renderer" \
     -f "$values/onap-override.yaml"
+PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/bin/phase3-sms-backend.py" wait-fresh --context "$PHASE3_FRESH_CONTEXT" --timeout 600
 test -n "$(kubectl -n onap get kafkas.kafka.strimzi.io -o name)" || {
     echo "ERROR: ONAP has not created its expected Kafka resource" >&2; exit 1;
 }

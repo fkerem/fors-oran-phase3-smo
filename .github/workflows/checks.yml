@@ -15,7 +15,7 @@ jobs:
       - run: .venv/bin/python tools/check-public-tree.py
   fresh-bootstrap:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

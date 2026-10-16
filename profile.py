@@ -90,6 +90,8 @@ readiness compatibility wrapper; this is not the unmodified stock PKI.
 SMS public-chain/routing compatibility is included, but its stock preload
 is deliberately held pending explicit write-safety review. This revision
 does not yet provide unattended full-SMO acceptance.
+Fresh quorum clients use the allocation's public root before first startup;
+backend acceptance additionally requires durable shard and AppRole custody.
 """)
 tour.Instructions(IG.Tour.MARKDOWN, """
 Wait for every startup service to show **Finished**. On node-0 inspect:
@@ -106,6 +108,9 @@ setup; no completion marker is written. Keep logs and credentials private.
 Fresh-start receipts are under `/local/setup/phase3-smo/fresh-start/`.
 That directory also contains private keys and passwords: do not upload it.
 The existing one-hour operator stability gate still applies.
+The SMS backend gate checks Vault seal status and durable recovery material;
+Pod Ready alone is insufficient. Do not restart SMS/quorum, reset Vault storage
+or regenerate authority to bypass a failed handoff. See README.md.
 Fresh startup uses explicit legacy-compatible PKCS12 packaging automatically.
 For a predeployment rehearsal failure, use only the reviewed recovery in
 README.md; do not replay infrastructure setup or delete generated PKI.
@@ -114,6 +119,8 @@ Kubernetes credentials are in `~/.kube/config`.
 The SMS preload safety hold requires review, not more waiting: do not
 manually unsuspend it or retry the stock writer. Follow the SMS safety
 gate in README.md. A held Job or Job Complete alone is not acceptance.
+The intentional hold stops setup before full completion; do not force a
+Finished/completion marker or replay setup to clear it.
 
 For local SMO UI access, use an SSH tunnel and loopback Kubernetes port
 forward as documented in README.md. Read chart-provided credentials only on
