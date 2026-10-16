@@ -100,12 +100,15 @@ def check(directory, run, docker):
                 time.sleep(.2)
             ca = '/fixture/root.cer' if mode != 'missing-ca' else '/fixture/missing.cer'
             command = docker+['run', '--rm', '--network', 'container:'+container,
+                # Synthetic private files are owned by the rehearsal operator,
+                # not the live image's UID 1000. No live-user equivalence claim.
+                '--user', str(os.getuid())+':'+str(os.getgid()),
                 '--mount', 'type=bind,src='+str(case)+',dst=/fixture,readonly',
                 '--entrypoint', '/sms/bin/preload', sms.IMAGE,
                 '-cacert', ca, '-serviceurl', 'https://localhost', '-serviceport', '10443', '-jsondir', '/fixture/inputs']
             result = subprocess.run(command, capture_output=True, timeout=90)
             private_write(case/'preload.stdout', result.stdout); private_write(case/'preload.stderr', result.stderr)
-            requests = (case/'requests.txt').read_text().splitlines()
+            requests = (case/'requests.txt').read_text().splitlines() if (case/'requests.txt').is_file() else []
             observation = {'exit_code': result.returncode,
                 'domain_posts': requests.count('POST /v1/sms/domain'),
                 'secret_posts': requests.count('POST /v1/sms/domain/fixture/secret'),
