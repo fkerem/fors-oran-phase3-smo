@@ -87,6 +87,9 @@ The later PyNTS certificate experiment is a separate, explicitly launched
 runtime; NTS readiness does not validate that notifier.
 New experiments use an experiment-local lab PKI and a source-verified Job
 readiness compatibility wrapper; this is not the unmodified stock PKI.
+SMS public-chain/routing compatibility is included, but its stock preload
+is deliberately held pending explicit write-safety review. This revision
+does not yet provide unattended full-SMO acceptance.
 """)
 tour.Instructions(IG.Tour.MARKDOWN, """
 Wait for every startup service to show **Finished**. On node-0 inspect:
@@ -107,6 +110,10 @@ Fresh startup uses explicit legacy-compatible PKCS12 packaging automatically.
 For a predeployment rehearsal failure, use only the reviewed recovery in
 README.md; do not replay infrastructure setup or delete generated PKI.
 Kubernetes credentials are in `~/.kube/config`.
+
+The SMS preload safety hold requires review, not more waiting: do not
+manually unsuspend it or retry the stock writer. Follow the SMS safety
+gate in README.md. A held Job or Job Complete alone is not acceptance.
 
 For local SMO UI access, use an SSH tunnel and loopback Kubernetes port
 forward as documented in README.md. Read chart-provided credentials only on
