@@ -332,7 +332,7 @@ class PreloadIntegrationTests(unittest.TestCase):
             if len(answers) == 1:
                 read.assert_not_called()
             else:
-                errors.assert_called_once_with([], preload_verified=True,dmaap_verified=False)
+                errors.assert_called_once_with([], preload_verified=True,dmaap_acceptance=None)
 
     def test_resume_requires_current_preload_before_onap_completion(self):
         preload_gate = SimpleNamespace(verify_acceptance=Mock(side_effect=ValueError('stale preload')))

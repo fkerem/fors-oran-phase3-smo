@@ -43,10 +43,14 @@ if (root/'context.json').is_file() and ('dmaap_contract' in json.loads((root/'co
     spec=importlib.util.spec_from_file_location('status_dmaap',Path(sys.argv[1])/'bin/phase3-dmaap-recovery.py')
     gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
     try:
-        if gate.verify_acceptance(root/'context.json') is None:raise ValueError('DMAAP receipt not accepted')
+        accepted=gate.verify_acceptance(root/'context.json')
+        if accepted is None:raise ValueError('DMAAP receipt not accepted')
     except (ValueError,OSError,RuntimeError,KeyError):
         raise SystemExit('DMAAP current verification: NOT ESTABLISHED; no readiness claim')
-    print('DMAAP current verification: VERIFIED')
+    if accepted.get('acceptance_kind')=='completed-comparator-verification':
+        print('DMAAP post-execution verification: VERIFIED; Job held, journal uncertain, no replay')
+    else:
+        print('DMAAP current verification: VERIFIED')
 print('Application acceptance does not establish full SMO/certificate-test readiness')
 PY
 python3 "$SRC/bin/collect-phase3-provenance.py" --require-ready

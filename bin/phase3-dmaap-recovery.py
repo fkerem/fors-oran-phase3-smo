@@ -23,6 +23,13 @@ import phase3_dmaap as dmaap
 ROOT=Path(__file__).resolve().parents[1]
 CONTEXT=Path('/local/setup/phase3-smo/fresh-start/context.json')
 CM_PREFIX='onap-dmaap-bc-'
+POSTEXEC_RECEIPT='dmaap-postexecution-acceptance.json'
+POSTEXEC_LATCH='dmaap-postexecution-attempt.json'
+# Only the inspected host-comparator defect is eligible, not arbitrary uncertainty.
+COMPARATOR_SOURCE_SHA256='fc682f8dd9f2bd507c685d9a4391d36c0126dcde9da918f8eb5a8d81fabc240f'
+POSTEXEC_CODE_CHANGES={
+    'bin/phase3-dmaap-recovery.py','bin/phase3-fresh-start.py',
+    'bin/phase3-onap-resume-gate.py','bin/collect-phase3-provenance.py'}
 INPUT_HASHES={
     ('dbc-dmaap','onap.json'):'16b5c0d9ca0f7b19b509f6c0a13377dcf1317bdf7dbad24ef9c3a226df82853f',
     ('dbc-dcaelocations','san-francisco.json'):'63df351809f7bf23627113aee419b849b7c575459d5b0bbb87657cecb0eb5081',
@@ -120,14 +127,14 @@ def protected():
     return result,completed
 
 
-def environment(path,expected_slice,allow_transition=False):
+def environment(path,expected_slice,allow_transition=False,completed_job=None,allow_completed_setup=False):
     context=fresh.verify_context(path)
     if (context['slice_urn']!=expected_slice or backend.command(['hostname']).decode().split('.')[0].strip()!='node-0'
             or backend.verify_acceptance(path) is None or preload.verify_acceptance(path) is None):
         raise dmaap.Blocked('Current allocation/backend/preload acceptance unavailable')
     if any(not (path.parent.parent.parent/n).is_file() for n in resume.PREREQUISITES):
         raise dmaap.Blocked('Infrastructure prerequisite missing; no replay')
-    if any((path.parent.parent.parent/n).exists() for n in ('setup-oran-smo-done','setup-driver-done')):
+    if not allow_completed_setup and any((path.parent.parent.parent/n).exists() for n in ('setup-oran-smo-done','setup-driver-done')):
         raise dmaap.Blocked('Completed setup requires separate review')
     if not all(any(c['type']=='Ready' and c['status']=='True' for c in n['status']['conditions']) for n in fresh.cluster_nodes()):
         raise dmaap.Blocked('All allocated Nodes must remain Ready')
@@ -144,6 +151,8 @@ def environment(path,expected_slice,allow_transition=False):
             transition=dmaap.strict_json((path.parent/'dmaap-transition.json').read_bytes())
             if transition.get('original_review_sha256')!=digest(original):raise dmaap.Blocked('Original continuation review changed')
             expected['Job/'+dmaap.JOB]=transition['replacement']
+            if completed_job is not None:
+                expected['Job/'+dmaap.JOB]=held_job_binding(completed_job,transition)
         if (objects!=expected or operator!=binding['operator'] or releases!=binding['releases']
                 or digest(path)!=binding['context_sha256']
                 or any(completed.get(k)!=v for k,v in old['completed_jobs'].items())):
@@ -417,6 +426,203 @@ def postconditions(path,armed,key,record):
     return state
 
 
+class ReadOnlyTransport(dmaap.Transport):
+    """Closeout cannot reach a provisioning write, even through a future caller."""
+    def request(self,method,path,data=None):
+        if method!='GET' or data is not None:
+            raise dmaap.Blocked('Post-execution closeout permits DMAAP GETs only')
+        return super().request(method,path)
+
+
+def held_job_binding(job,transition):
+    status=job.get('status',{})
+    if (job['metadata'].get('deletionTimestamp') or job['spec'].get('suspend') is not True
+            or status.get('active',0) or status.get('failed',0) or status.get('succeeded')!=1
+            or any(c.get('type')=='Failed' and c.get('status')=='True' for c in status.get('conditions',[]))
+            or not any(c.get('type')=='Complete' and c.get('status')=='True' for c in status.get('conditions',[]))):
+        raise dmaap.Blocked('Post-execution closeout requires one successful completed and held Job')
+    activated=copy.deepcopy(job['spec']);activated['suspend']=False
+    if transition.get('replacement')!={'uid':job['metadata']['uid'],'spec_sha256':sha(activated)}:
+        raise dmaap.Blocked('Held Job is not the original reviewed replacement')
+    return {'uid':job['metadata']['uid'],'spec_sha256':sha(job['spec'])}
+
+
+def archive_ledger(directory):
+    directory=Path(directory)
+    if directory.is_symlink() or not directory.is_dir():raise dmaap.Blocked('Private archive unavailable')
+    ledger_path=directory/'SHA256SUMS.json'
+    ledger=dmaap.strict_json(ledger_path.read_bytes())
+    if (not ledger or set(ledger)!={p.name for p in directory.iterdir() if p.name!='SHA256SUMS.json'}
+            or any(Path(n).name!=n or digest(directory/n)!=h for n,h in ledger.items())):
+        raise dmaap.Blocked('Private archive integrity changed')
+    return digest(ledger_path)
+
+
+def completed_history(path,job,pod,journal):
+    """Require preserved proof of this exact comparator failure and successful hold."""
+    parent=path.parent
+    transition=dmaap.strict_json((parent/'dmaap-transition.json').read_bytes())
+    before=transition['binding_before']
+    if before['code_sha256'].get('bin/phase3-dmaap-recovery.py')!=COMPARATOR_SOURCE_SHA256:
+        raise dmaap.Blocked('Failure was not the inspected comparator revision')
+    held_job_binding(job,transition)
+    original=Path(transition['private_archive']);original_ledger=archive_ledger(original)
+    matches=[]
+    for directory in sorted(parent.parent.glob('dmaap-closeout-*')):
+        if directory.is_symlink():raise dmaap.Blocked('Private archive symlink refused')
+        saved=dmaap.strict_json((directory/'job.json').read_bytes())
+        if saved['metadata']['uid']!=job['metadata']['uid']:continue
+        ledger=archive_ledger(directory)
+        saved_pod=dmaap.strict_json((directory/(pod['metadata']['name']+'.json')).read_bytes())
+        saved_journal=dmaap.strict_json((directory/'journal.json').read_bytes())
+        failures=list(directory.glob('dmaap-blocked-*.json'));stops=list(directory.glob('dmaap-stop-*.json'))
+        if len(failures)!=1 or len(stops)!=1:raise dmaap.Blocked('Ambiguous preserved failure history')
+        failure=dmaap.strict_json(failures[0].read_bytes());stop_record=dmaap.strict_json(stops[0].read_bytes())
+        if (failure!={'schema':1,'failure_type':'Blocked','reason':'Unreviewed Pod default',
+                      'application_replay_performed':False,'certificate_fault_cases_started':False}
+                or stop_record!={'journal_stopped':True,'job_suspended':True}
+                or saved['spec']!=job['spec'] or saved_pod['metadata']['uid']!=pod['metadata']['uid']
+                or saved_pod['spec']!=pod['spec'] or saved_journal['metadata']['uid']!=journal['metadata']['uid']
+                or saved_journal['data']!=journal['data']):
+            raise dmaap.Blocked('Preserved completed attempt or comparator failure changed')
+        log_name=pod['metadata']['name']+'-dmaap-provisioning-job.stdout'
+        logs=backend.command(['kubectl','-n','onap','logs',pod['metadata']['name'],
+                              '-c','dmaap-provisioning-job','--timestamps=true'])
+        if (logs!=(directory/log_name).read_bytes() or
+                b'DMAAP private postconditions verified; host acceptance remains required' not in logs):
+            raise dmaap.Blocked('Original successful guarded-client log unavailable')
+        historical=('dmaap-armed.json','dmaap-attempt.json','dmaap-recovery-attempt.json','dmaap-transition.json')
+        for name in historical:
+            if digest(parent/name)!=digest(directory/name):raise dmaap.Blocked('Original attempt evidence changed')
+        if digest(failures[0])!=digest(parent/failures[0].name) or digest(stops[0])!=digest(parent/stops[0].name):
+            raise dmaap.Blocked('Original failure/stop evidence changed')
+        matches.append({'directory':str(directory),'ledger_sha256':ledger,
+                        'history_sha256':{n:digest(parent/n) for n in (*historical,failures[0].name,stops[0].name)}})
+    if len(matches)!=1:raise dmaap.Blocked('Exactly one preserved comparator-failure archive required')
+    return {**matches[0],'original_directory':str(original),'original_ledger_sha256':original_ledger}
+
+
+def completed_postconditions(path,armed,key,record):
+    context,job,plan,state,credential=check_attempt(path,armed,key,record)
+    pods=preload.owned_pods(job)
+    if (len(pods)!=1 or state.get('state')!='uncertain' or state.get('reason')!='coordinator-stopped-no-replay'
+            or state.get('operation')!='all-private-postconditions'
+            or type(state.get('posts_attempted')) is not int or state['posts_attempted']!=6
+            or type(state.get('posts_observed')) is not int or state['posts_observed']!=6
+            or pods[0]['metadata']['uid']!=state.get('pod_uid')):
+        raise dmaap.Blocked('Uncertain attempt is not the completed comparator-failure case')
+    pod=pods[0];statuses=pod.get('status',{}).get('containerStatuses',[])
+    if (pod['metadata'].get('deletionTimestamp') or pod['status'].get('phase')!='Succeeded'
+            or len(statuses)!=1 or statuses[0].get('restartCount')!=0 or statuses[0].get('lastState')
+            or statuses[0].get('state',{}).get('terminated',{}).get('exitCode')!=0
+            or not statuses[0].get('imageID','').endswith(dmaap.IMAGE.split('@')[1])
+            or normalized_pod(pod['spec'],admitted=True)!=normalized_pod(job['spec']['template']['spec'])):
+        raise dmaap.Blocked('Completed DMAAP runtime identity/history changed')
+    journal=get('configmap/'+dmaap.JOURNAL)
+    if journal['metadata']['uid']!=armed['journal_uid'] or dmaap.strict_json(journal['data']['journal.json'])!=state:
+        raise dmaap.Blocked('Completed journal changed during observation')
+    history=completed_history(path,job,pod,journal)
+    dmaap.verify_values(plan,ReadOnlyTransport(Path(context['pki_directory'])/'root.cer',
+                       armed['binding']['server']['address'],credential))
+    return job,pod,journal,history
+
+
+def code_transition(before,after):
+    old=before['code_sha256'];new=after['code_sha256']
+    if set(old)!=set(new):raise dmaap.Blocked('Post-execution code inventory changed')
+    changed={n for n in old if old[n]!=new[n]}
+    if not changed or not changed<=POSTEXEC_CODE_CHANGES:
+        raise dmaap.Blocked('Unreviewed post-execution code change')
+    for key in ('context_sha256','slice_urn','sms_receipts','operator','releases'):
+        if before[key]!=after[key]:raise dmaap.Blocked('Post-execution protected environment changed')
+    return {n:{'before':old[n],'after':new[n]} for n in sorted(changed)}
+
+
+def completed_audit(path,expected_slice,allow_completed_setup=False):
+    path=Path(path);parent=path.parent
+    if (parent/'dmaap-acceptance.json').exists():raise dmaap.Blocked('Conflicting ordinary DMAAP acceptance')
+    latch=dmaap.strict_json((parent/'dmaap-attempt.json').read_bytes())
+    armed=dmaap.strict_json((parent/'dmaap-armed.json').read_bytes())
+    if latch['binding']!=armed['binding']:raise dmaap.Blocked('Original attempt binding changed')
+    dmaap.require_qualification(latch['qualification'])
+    job,pod,journal,history=completed_postconditions(path,armed,bytes.fromhex(latch['hmac_key']),latch['qualification'])
+    _,current=environment(path,expected_slice,allow_transition=True,completed_job=job,
+                          allow_completed_setup=allow_completed_setup)
+    transition=dmaap.strict_json((parent/'dmaap-transition.json').read_bytes())
+    changes=code_transition(transition['binding_before'],current)
+    original_review=parent/'onap-deploy-resume-review.json'
+    reviews=[p for p in parent.glob('dmaap-review-*.json') if digest(p)==digest(Path(history['directory'])/'dmaap-review-df14ef1.json')]
+    if len(reviews)!=1:raise dmaap.Blocked('Original DMAAP review unavailable or ambiguous')
+    if dmaap.strict_json(reviews[0].read_bytes())['binding']!=transition['binding_before']:
+        raise dmaap.Blocked('Original DMAAP review/transition differ')
+    return {'schema':1,'kind':'completed-comparator-verification','environment':current,
+        'code_changes':changes,'status_script_sha256':digest(ROOT/'bin/phase3-status.sh'),
+        'history':history,'original_review_sha256':digest(original_review),
+        'dmaap_review_sha256':digest(reviews[0]),'transition_sha256':digest(parent/'dmaap-transition.json'),
+        'armed_sha256':digest(parent/'dmaap-armed.json'),'attempt_sha256':digest(parent/'dmaap-attempt.json'),
+        'job_uid':job['metadata']['uid'],'job_spec_sha256':sha(job['spec']),
+        'pod_uid':pod['metadata']['uid'],'pod_spec_sha256':sha(pod['spec']),
+        'journal_uid':journal['metadata']['uid'],'journal_data_sha256':sha(journal['data']),
+        'posts_observed':6,'provisioning_replayed':False,'journal_rewritten':False}
+
+
+def preserve_completed(path,binding):
+    directory=Path(tempfile.mkdtemp(prefix='dmaap-postexecution-',dir=str(path.parent.parent)))
+    os.chmod(directory,0o700)
+    for name,kind in (('job.json','job/'+dmaap.JOB),('journal.json','configmap/'+dmaap.JOURNAL)):
+        fresh.private_write(directory/name,dmaap.canonical(get(kind)))
+    job=get('job/'+dmaap.JOB)
+    for pod in preload.owned_pods(job):
+        fresh.private_write(directory/'pod.json',dmaap.canonical(pod))
+        fresh.private_write(directory/'main.log',backend.command(['kubectl','-n','onap','logs',pod['metadata']['name'],
+                            '-c','dmaap-provisioning-job','--timestamps=true']))
+    durable_write(directory/'binding.json',binding)
+    durable_write(directory/'SHA256SUMS.json',{p.name:digest(p) for p in directory.iterdir()})
+    return {'directory':str(directory),'ledger_sha256':archive_ledger(directory)}
+
+
+def accept_completed(path,expected_slice,review_path):
+    path=Path(path);review_path=Path(review_path);parent=path.parent
+    approved=dmaap.strict_json(review_path.read_bytes())
+    age=(datetime.now(timezone.utc)-timestamp(approved['created_utc'])).total_seconds()
+    if not 0<=age<=1800:raise dmaap.Blocked('Post-execution review expired')
+    if any((parent/n).exists() for n in (POSTEXEC_LATCH,POSTEXEC_RECEIPT,'dmaap-acceptance.json')):
+        raise dmaap.Blocked('Post-execution latch or acceptance already exists; no overwrite')
+    current=completed_audit(path,expected_slice)
+    if approved.get('schema')!=1 or approved.get('binding')!=current:
+        raise dmaap.Blocked('Reviewed post-execution bindings changed')
+    durable_write(parent/POSTEXEC_LATCH,{'schema':1,'review_file':str(review_path.resolve()),
+                  'review_sha256':digest(review_path),'binding_sha256':sha(current)})
+    archive=preserve_completed(path,current)
+    if completed_audit(path,expected_slice)!=current:raise dmaap.Blocked('Completed attempt changed before acceptance')
+    receipt={'schema':1,'passed':True,'kind':'completed-comparator-verification',
+        'binding':current,'review_file':str(review_path.resolve()),'review_sha256':digest(review_path),
+        'latch_sha256':digest(parent/POSTEXEC_LATCH),'private_archive':archive,
+        'accepted_utc':datetime.now(timezone.utc).isoformat()}
+    durable_write(parent/POSTEXEC_RECEIPT,receipt)
+    return receipt
+
+
+def verify_completed_acceptance(path):
+    path=Path(path);parent=path.parent;receipt=dmaap.strict_json((parent/POSTEXEC_RECEIPT).read_bytes())
+    review_path=Path(receipt['review_file']);review=dmaap.strict_json(review_path.read_bytes())
+    latch=dmaap.strict_json((parent/POSTEXEC_LATCH).read_bytes())
+    review_age=(timestamp(receipt['accepted_utc'])-timestamp(review['created_utc'])).total_seconds()
+    if (receipt.get('schema')!=1 or receipt.get('passed') is not True or receipt.get('kind')!='completed-comparator-verification'
+            or review.get('schema')!=1 or not 0<=review_age<=1800
+            or receipt['review_sha256']!=digest(review_path) or receipt['binding']!=review.get('binding')
+            or receipt['latch_sha256']!=digest(parent/POSTEXEC_LATCH)
+            or latch!={'schema':1,'review_file':str(review_path.resolve()),'review_sha256':digest(review_path),
+                       'binding_sha256':sha(receipt['binding'])}
+            or archive_ledger(receipt['private_archive']['directory'])!=receipt['private_archive']['ledger_sha256']):
+        raise dmaap.Blocked('Post-execution acceptance evidence changed')
+    current=completed_audit(path,receipt['binding']['environment']['slice_urn'],allow_completed_setup=True)
+    if current!=receipt['binding']:raise dmaap.Blocked('Post-execution current binding changed')
+    return {'dmaap_accepted':True,'acceptance_kind':'completed-comparator-verification','posts_observed':6,
+            'job_uid':current['job_uid'],'job_spec_sha256':current['job_spec_sha256'],'job_suspended':True,
+            'journal_state':'uncertain','receipt_sha256':digest(parent/POSTEXEC_RECEIPT)}
+
+
 def run_held(path,record):
     parent=path.parent
     if any((parent/n).exists() for n in ('dmaap-attempt.json','dmaap-armed.json','dmaap-acceptance.json')):
@@ -477,6 +683,7 @@ def run_held(path,record):
 
 def verify_acceptance(path):
     path=Path(path);context=dmaap.strict_json(path.read_bytes())
+    if (path.parent/POSTEXEC_RECEIPT).exists():return verify_completed_acceptance(path)
     if context.get('dmaap_contract')!=1 and not (path.parent/'dmaap-transition.json').exists():return None
     latch=dmaap.strict_json((path.parent/'dmaap-attempt.json').read_bytes())
     armed=dmaap.strict_json((path.parent/'dmaap-armed.json').read_bytes())
@@ -507,9 +714,13 @@ def continue_startup(path,expected_slice,review_path):
     review=dmaap.strict_json(review_path.read_bytes())
     transition=dmaap.strict_json((path.parent/'dmaap-transition.json').read_bytes())
     if review.get('binding')!=transition['binding_before']:raise dmaap.Blocked('DMAAP transition is not the reviewed change')
-    if verify_acceptance(path) is None:raise dmaap.Blocked('Current DMAAP acceptance unavailable')
-    _,binding=environment(path,expected_slice,allow_transition=True)
-    before=transition['binding_before']
+    acceptance=verify_acceptance(path)
+    if acceptance is None:raise dmaap.Blocked('Current DMAAP acceptance unavailable')
+    completed=acceptance.get('acceptance_kind')=='completed-comparator-verification'
+    _,binding=environment(path,expected_slice,allow_transition=True,
+                          completed_job=get('job/'+dmaap.JOB) if completed else None)
+    before=(dmaap.strict_json((path.parent/POSTEXEC_RECEIPT).read_bytes())['binding']['environment']
+            if completed else transition['binding_before'])
     for k in ('code_sha256','context_sha256','sms_receipts','operator','releases'):
         if binding[k]!=before[k]:raise dmaap.Blocked('Continuation code or protected binding changed')
     if not (path.parent/'onap-acceptance.json').exists():
@@ -523,7 +734,8 @@ def continue_startup(path,expected_slice,review_path):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     mode=parser.add_mutually_exclusive_group(required=True)
-    for n in ('audit','apply','verify','run-fresh','continue'):mode.add_argument('--'+n,action='store_true')
+    for n in ('audit','apply','verify','run-fresh','continue','audit-completed','accept-completed'):
+        mode.add_argument('--'+n,action='store_true')
     parser.add_argument('--expected-slice');parser.add_argument('--review-file',type=Path)
     parser.add_argument('--qualification',type=Path);parser.add_argument('--context',type=Path,default=CONTEXT)
     args=parser.parse_args();os.umask(0o077)
@@ -531,7 +743,17 @@ def main():
     signal.signal(signal.SIGTERM,cancelled)
     try:
         with backend.driver_lock():
-            if args.verify:
+            if args.audit_completed or args.accept_completed:
+                if not args.expected_slice or not args.review_file or args.qualification:
+                    raise dmaap.Blocked('Explicit slice/review required; no new qualification or writer')
+                if args.audit_completed:
+                    if any((args.context.parent/n).exists() for n in (POSTEXEC_LATCH,POSTEXEC_RECEIPT)):
+                        raise dmaap.Blocked('Post-execution closeout already attempted; verify only')
+                    binding=completed_audit(args.context,args.expected_slice)
+                    durable_write(args.review_file,{'schema':1,'created_utc':datetime.now(timezone.utc).isoformat(),
+                                  'binding':binding})
+                else:accept_completed(args.context,args.expected_slice,args.review_file)
+            elif args.verify:
                 if verify_acceptance(args.context) is None:raise dmaap.Blocked('DMAAP contract not active')
             elif args.run_fresh:
                 context=fresh.verify_context(args.context)
@@ -553,7 +775,8 @@ def main():
     except Exception as error:
         if args.context.parent.is_dir():
             reason=str(error) if isinstance(error,dmaap.Blocked) else 'private-validation-error'
-            durable_write(args.context.parent/('dmaap-blocked-%d.json'%time.time_ns()),{
+            prefix='dmaap-postexecution-blocked' if args.audit_completed or args.accept_completed else 'dmaap-blocked'
+            durable_write(args.context.parent/('%s-%d.json'%(prefix,time.time_ns())),{
                 'schema':1,'failure_type':type(error).__name__,'reason':reason,
                 'application_replay_performed':False,'certificate_fault_cases_started':False})
         print('DMAAP gate blocked; private review required; no write retry/reset/replay');return 2

@@ -271,7 +271,7 @@ def verify_context(path, require_empty=False):
     return context
 
 
-def onap_errors(resources, preload_verified=False, dmaap_verified=False):
+def onap_errors(resources, preload_verified=False, dmaap_verified=False, dmaap_acceptance=None):
     errors=[]
     kinds={r['kind'] for r in resources}
     if not {'Deployment','StatefulSet','Job'}.issubset(kinds):
@@ -282,7 +282,18 @@ def onap_errors(resources, preload_verified=False, dmaap_verified=False):
             if name=='onap-dmaap-bc-dmaap-provisioning' and r['metadata'].get('annotations',{}).get('phase3.onap.org/dmaap-gate')=='guarded-v1':
                 import phase3_dmaap
                 pod=spec.get('template',{}).get('spec',{})
-                if (not dmaap_verified or spec.get('suspend') is not False or spec.get('backoffLimit')!=0
+                held_verified=False
+                if isinstance(dmaap_acceptance,dict) and dmaap_acceptance.get('acceptance_kind')=='completed-comparator-verification':
+                    held_verified=(dmaap_acceptance.get('dmaap_accepted') is True
+                        and dmaap_acceptance.get('job_suspended') is True
+                        and spec.get('suspend') is True
+                        and r['metadata'].get('uid')==dmaap_acceptance.get('job_uid')
+                        and hashlib.sha256(phase3_dmaap.canonical(spec)).hexdigest()==dmaap_acceptance.get('job_spec_sha256')
+                        and status.get('succeeded')==1 and not status.get('active',0) and not status.get('failed',0))
+                normal_verified=(dmaap_verified is True or isinstance(dmaap_acceptance,dict)
+                                 and dmaap_acceptance.get('dmaap_accepted') is True
+                                 and dmaap_acceptance.get('acceptance_kind')!='completed-comparator-verification')
+                if (not (held_verified or normal_verified and spec.get('suspend') is False) or spec.get('backoffLimit')!=0
                         or pod.get('restartPolicy')!='Never' or len(pod.get('containers',[]))!=1
                         or not phase3_dmaap.is_client(pod['containers'][0])):
                     raise ValueError('DMAAP guarded acceptance unavailable; Job Complete alone is not acceptance')
@@ -321,12 +332,12 @@ def wait_onap(path, timeout):
     preload_verified=preload_gate.verify_acceptance(path) is not None
     dmaap_spec=importlib.util.spec_from_file_location('dmaap_acceptance',ROOT/'bin/phase3-dmaap-recovery.py')
     dmaap_gate=importlib.util.module_from_spec(dmaap_spec);dmaap_spec.loader.exec_module(dmaap_gate)
-    dmaap_verified=dmaap_gate.verify_acceptance(path) is not None
-    if context.get('dmaap_contract')==1 and not dmaap_verified:raise ValueError('Fresh DMAAP acceptance required')
+    dmaap_acceptance=dmaap_gate.verify_acceptance(path)
+    if context.get('dmaap_contract')==1 and dmaap_acceptance is None:raise ValueError('Fresh DMAAP acceptance required')
     deadline=time.monotonic()+timeout
     while True:
         resources=json.loads(kubectl('get','deployments,statefulsets,jobs','-n','onap','-o','json'))['items']
-        errors=onap_errors(resources, preload_verified=preload_verified, dmaap_verified=dmaap_verified)
+        errors=onap_errors(resources, preload_verified=preload_verified, dmaap_acceptance=dmaap_acceptance)
         if not errors:
             break
         if time.monotonic()>=deadline:
@@ -334,7 +345,7 @@ def wait_onap(path, timeout):
         print('ONAP prerequisite gate: %d pending'%len(errors),flush=True)
         time.sleep(20)
         preload_verified=preload_gate.verify_acceptance(path) is not None
-        dmaap_verified=dmaap_gate.verify_acceptance(path) is not None
+        dmaap_acceptance=dmaap_gate.verify_acceptance(path)
     service=json.loads(kubectl('get','service','aaf-locate','-n','onap','-o','json'))
     tls=ssl.create_default_context(cafile=str(Path(context['pki_directory'])/'root.cer'))
     with socket.create_connection((service['spec']['clusterIP'],8095),timeout=20) as sock:

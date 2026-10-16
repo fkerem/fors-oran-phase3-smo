@@ -180,6 +180,40 @@ recreated. The continuation uses the normal ONAP and remaining-SMO gates;
 it never forces a Finished marker. Full SMO readiness and the later isolated
 PyNTS scheduled positive control remain separate from this startup repair.
 
+### Verification-only closeout of the inspected completed comparator failure
+
+This is **not** permission to adopt an arbitrary uncertain attempt. The explicit
+`--audit-completed` / `--accept-completed` modes require the preserved failure
+from the inspected host-comparator revision, one succeeded zero-restart Pod,
+six attempted/observed requests, the same suspended completed Job, unchanged
+private journal and archives, current SMS/PKI/inventory bindings and full API
+readback. The DMAAP transport permits GET only. Scoped SMS verification still
+uses temporary Vault login/revoke authentication; it does not replay preload.
+
+From the separately tested checkout, with a new private review path:
+
+```sh
+python3 bin/phase3-dmaap-recovery.py --audit-completed --expected-slice "$slice" \
+  --review-file /local/setup/phase3-smo/fresh-start/UNIQUE-postexecution-review.json
+# Review the private binding and the exact allowed verifier-code changes.
+python3 bin/phase3-dmaap-recovery.py --accept-completed --expected-slice "$slice" \
+  --review-file /local/setup/phase3-smo/fresh-start/UNIQUE-postexecution-review.json
+python3 bin/phase3-dmaap-recovery.py --verify
+# Use the ORIGINAL DMAAP recovery review for the existing continuation interface.
+./setup-driver.sh --resume-after-dmaap --expected-slice "$slice" \
+  --review-file /local/setup/phase3-smo/fresh-start/ORIGINAL-dmaap-review.json
+```
+
+The 30-minute review authorizes a separate exclusive post-execution receipt;
+it never changes the uncertain journal, unsuspends/replaces the completed Job,
+creates ordinary DMAAP acceptance, or retries a provisioning request. Failed or
+interrupted closeout keeps its latch and requires review, not re-running accept.
+Status distinguishes this verification from the normal fresh-run acceptance.
+The receipt carries the original reviews/transition and exact code changes;
+it does not rebase historical bindings. Fresh contexts retain the ordinary gate
+and uncertain attempts are never closed automatically. Verified postconditions
+do not establish exactly-once execution or total downstream write counts.
+
 ## New experiments: fresh-start compatibility baseline
 
 **Update/Pull this repository-backed profile in POWDER and compare the full
