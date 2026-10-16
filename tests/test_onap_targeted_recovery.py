@@ -138,7 +138,7 @@ class JobTests(unittest.TestCase):
         pod={'status':{'podIP':'10.1.2.3','initContainerStatuses':[{'name':'aaf-sms-aaf-config','state':{
             'terminated':{'startedAt':'2026-10-16T00:01:49Z','finishedAt':'2026-10-16T00:01:58Z'}}}]}}
         cm={'metadata':{'uid':'cm'},'status':{'containerStatuses':[{'restartCount':0}]}}
-        line='2026-10-16T00:01:53Z ip=10.1.2.3,status=403,meth=PUT,path=/cert/local,SVC1403 Sponsorship cannot be determined'
+        line='2026-10-16T00:01:53.839123174Z ip=10.1.2.3,status=403,meth=PUT,path=/cert/local,SVC1403 Sponsorship cannot be determined'
         proof=recovery.sms_proof(pod,cm,'FAILED to get Certificate',line)
         self.assertEqual(1,proof['preissuance_forbidden_count'])
         for altered in (line.replace('status=403','status=200'),line.replace('10.1.2.3','10.1.2.4'),line.replace('00:01:53','00:02:53'),''):
@@ -146,6 +146,13 @@ class JobTests(unittest.TestCase):
         with self.assertRaises(ValueError):recovery.sms_proof(pod,cm,'Obtained Certificates',line)
         cm['status']['containerStatuses'][0]['restartCount']=1
         with self.assertRaises(ValueError):recovery.sms_proof(pod,cm,'FAILED to get Certificate',line)
+
+    def test_jammy_timestamp_precision_is_normalized_without_changing_window(self):
+        parsed=recovery.timestamp('2026-10-16T00:01:53.839123174Z')
+        self.assertEqual(839123,parsed.microsecond)
+        self.assertEqual(timezone.utc,parsed.tzinfo)
+        for bad in ('2026-10-16T00:01:53', '2026-10-16T00:01:53.1234567890Z', 'invalid'):
+            with self.assertRaises(ValueError):recovery.timestamp(bad)
 
     def test_prerequisites_require_two_minutes_stability(self):
         pod={'metadata':{'uid':'dep'},'spec':{'containers':[{'name':'dependency'}]},'status':{

@@ -54,6 +54,15 @@ def condition(resource, name):
     return any(c['type'] == name and c['status'] == 'True' for c in resource.get('status', {}).get('conditions', []))
 
 
+def timestamp(value):
+    # Kubernetes log timestamps use nanoseconds. Python 3.10 accepts at most
+    # microsecond precision; truncate only excess fractional digits, not time.
+    if not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)', value):
+        raise ValueError('Missing or malformed timezone-aware Kubernetes timestamp')
+    value = re.sub(r'(\.\d{6})\d+(?=Z|[+-])', r'\1', value)
+    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+
 def contract(container):
     result = {k: copy.deepcopy(container[k]) for k in ('name', 'image', 'command', 'args', 'env', 'envFrom', 'volumeMounts') if k in container}
     if 'volumeMounts' in result:
@@ -144,8 +153,8 @@ def sms_proof(pod, cm, client_log, cm_log):
     if cm['status']['containerStatuses'][0].get('restartCount') != 0:
         raise ValueError('Certificate-manager log history is incomplete')
     state = next(s for s in pod['status']['initContainerStatuses'] if s['name'] == 'aaf-sms-aaf-config')['state']['terminated']
-    start = datetime.fromisoformat(state['startedAt'].replace('Z', '+00:00'))
-    end = datetime.fromisoformat(state['finishedAt'].replace('Z', '+00:00'))
+    start = timestamp(state['startedAt'])
+    end = timestamp(state['finishedAt'])
     ip = pod['status'].get('podIP')
     if not ip or 'FAILED to get Certificate' not in client_log or 'Obtained Certificates' in client_log:
         raise ValueError('Ambiguous client-side issuance result')
@@ -153,7 +162,7 @@ def sms_proof(pod, cm, client_log, cm_log):
     for line in cm_log.splitlines():
         if 'ip='+ip+',' not in line or 'meth=PUT,path=/cert/' not in line:
             continue
-        stamp = datetime.fromisoformat(line.split()[0].replace('Z', '+00:00'))
+        stamp = timestamp(line.split()[0])
         if not start <= stamp <= end:
             continue
         if not ('status=403,' in line and 'SVC1403' in line and 'Sponsorship cannot be determined' in line):
@@ -174,7 +183,7 @@ def ready_pods(pods, names):
             raise ValueError('Prerequisite not uniquely Ready: '+name)
         pod = matches[0]
         transition = next(c['lastTransitionTime'] for c in pod['status']['conditions'] if c['type'] == 'Ready')
-        if (now-datetime.fromisoformat(transition.replace('Z', '+00:00'))).total_seconds() < 120:
+        if (now-timestamp(transition)).total_seconds() < 120:
             raise ValueError('Prerequisite has not been Ready for two minutes: '+name)
         result.append({'uid': pod['metadata']['uid'], 'restarts': {s['name']: s.get('restartCount', 0) for s in pod['status']['containerStatuses']}})
     return result
