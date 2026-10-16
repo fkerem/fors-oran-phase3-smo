@@ -281,6 +281,9 @@ class CompletedTests(unittest.TestCase):
         for key,value in (('job_uid','other'),('job_spec_sha256','other'),('dmaap_accepted',False),('job_suspended',False)):
             bad=dict(acceptance,**{key:value})
             with self.assertRaises(ValueError):fresh.onap_errors([self.job],True,dmaap_acceptance=bad)
+        unrelated=copy.deepcopy(self.job);unrelated['metadata']['name']='unrelated-synthetic-job'
+        with self.assertRaisesRegex(ValueError,'held without exact'):
+            fresh.onap_errors([unrelated],True,dmaap_acceptance=acceptance)
 
     def test_private_ledger_rejects_tampering_and_symlinks(self):
         archive=Path(self.temp.name)/'archive';archive.mkdir();gate.durable_write(archive/'evidence.json',{'synthetic':1})

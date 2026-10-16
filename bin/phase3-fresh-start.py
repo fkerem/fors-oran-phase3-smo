@@ -279,10 +279,10 @@ def onap_errors(resources, preload_verified=False, dmaap_verified=False, dmaap_a
     for r in resources:
         spec=r.get('spec',{}); status=r.get('status',{}); kind=r['kind']; name=r['metadata']['name']
         if kind=='Job':
+            held_verified=False
             if name=='onap-dmaap-bc-dmaap-provisioning' and r['metadata'].get('annotations',{}).get('phase3.onap.org/dmaap-gate')=='guarded-v1':
                 import phase3_dmaap
                 pod=spec.get('template',{}).get('spec',{})
-                held_verified=False
                 if isinstance(dmaap_acceptance,dict) and dmaap_acceptance.get('acceptance_kind')=='completed-comparator-verification':
                     held_verified=(dmaap_acceptance.get('dmaap_accepted') is True
                         and dmaap_acceptance.get('job_suspended') is True
@@ -309,6 +309,8 @@ def onap_errors(resources, preload_verified=False, dmaap_verified=False, dmaap_a
                 if (spec.get('backoffLimit') != 0 or pod.get('restartPolicy') != 'Never'
                         or len(clients) != 1 or not phase3_preload.is_client(clients[0])):
                     raise ValueError('SMS preload Job is not the exact reviewed guarded client')
+            if spec.get('suspend') is True and not held_verified:
+                raise ValueError('ONAP Job is held without exact post-execution acceptance: '+name)
             conditions=status.get('conditions',[])
             if any(c['type']=='Failed' and c['status']=='True' for c in conditions):
                 raise ValueError('ONAP Job failed; no automatic retry: '+name)
