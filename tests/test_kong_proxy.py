@@ -142,6 +142,7 @@ class WorkflowTests(unittest.TestCase):
         gate.write(self.override,policy.OVERRIDE)
         self.binding={'service':service(),'historical':{'synthetic':True},'runtime':{'synthetic':True},
                       'release':{'revision':2,'status':'failed','manifest_sha256':'synthetic'},
+                      'blocker_archive':{'directory':'/synthetic/archive','ledger_sha256':'0'*64},
                       'override':{'path':str(self.override),'sha256':gate.digest(self.override)}}
 
     def review_at(self,age=0):
@@ -208,7 +209,7 @@ class WorkflowTests(unittest.TestCase):
             if args[0]=='kubectl':return json.dumps(converted()).encode()
             self.assertEqual(['helm','get','manifest'],args[:3]);return yaml.safe_dump_all(old).encode()
         svc=[service(),converted(),converted()]
-        with patch.object(gate,'audit_binding',return_value=self.binding),patch.object(gate,'preserve',return_value={}), \
+        with patch.object(gate,'audit_binding',return_value=self.binding) as audit,patch.object(gate,'preserve',return_value={}), \
              patch.object(gate,'service',side_effect=svc),patch.object(gate,'command',side_effect=cmd) as call, \
              patch.object(gate,'helm_logged') as helm,patch.object(gate,'historical',return_value=self.binding['historical']), \
              patch.object(gate.util,'release_binding',return_value=({'revision':3,'status':'deployed'},new)), \
@@ -216,6 +217,7 @@ class WorkflowTests(unittest.TestCase):
              patch.object(gate,'probe',return_value={'http_status':404}):
             gate.apply(self.path,self.review,None,Mock(ROOT=ROOT),'slice')
             helm.assert_called_once();self.assertEqual(2,call.call_count)
+            self.assertEqual(self.binding['blocker_archive'],audit.call_args.args[-1])
         r=gate.read(self.path.parent/(gate.PREFIX+'acceptance.json'));self.assertTrue(r['passed'])
         self.assertEqual(3,r['release']['revision'])
 
@@ -283,6 +285,88 @@ class WorkflowTests(unittest.TestCase):
         link=self.path.parent/'status-link.json';link.symlink_to(target)
         with self.assertRaisesRegex(ValueError,'not regular'):gate.write_status(link,{'current':False})
         self.assertEqual({'current':True},gate.read(target))
+
+
+class ArchiveSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.work=Path(self.temp.name);self.path=self.work/'fresh-start/context.json'
+        self.path.parent.mkdir();gate.write(self.path,{})
+        self.log='oru-readiness-nonrtric-synthetic.log'
+        (self.work/self.log).write_bytes(b'UPGRADE FAILED: context deadline exceeded\n')
+        self.release={'revision':2,'status':'failed'}
+
+    def archive(self,name,extra=False):
+        directory=self.work/('nonrtric-kong-lb-blocker-'+name);directory.mkdir()
+        gate.write(directory/'kong-service.json',service())
+        gate.write(directory/'helm-status.json',{'version':2,'info':{'status':'failed'}})
+        (directory/self.log).write_bytes((self.work/self.log).read_bytes())
+        if extra:gate.write(directory/'extra-evidence.json',{'different':True})
+        return gate.util.seal(directory)
+
+    def select(self,record):return gate.blocker_archive(self.path,service(),self.release,record)
+
+    def test_explicit_path_and_full_lowercase_hash_are_required(self):
+        record=self.archive('a')
+        for selected in (None,{},dict(record,ledger_sha256='bad'),dict(record,ledger_sha256='A'*64)):
+            with self.assertRaisesRegex(ValueError,'Explicit'):self.select(selected)
+
+    def test_single_selected_archive_preserves_original_ledger(self):
+        record=self.archive('a');before=(Path(record['directory'])/'SHA256SUMS.json').read_bytes()
+        result=self.select(record)
+        self.assertEqual([record],result['equivalent_archives'])
+        self.assertEqual(before,(Path(record['directory'])/'SHA256SUMS.json').read_bytes())
+
+    def test_identical_copies_are_verified_and_bound_without_glob_first_selection(self):
+        first=self.archive('a');selected=self.archive('z')
+        self.assertEqual(first['ledger_sha256'],selected['ledger_sha256'])
+        snapshots={str(p):p.read_bytes() for p in self.work.rglob('*') if p.is_file()}
+        result=self.select(selected);gate.verify_blocker_archive(result)
+        self.assertEqual(selected['directory'],result['directory'])
+        self.assertEqual([first,selected],result['equivalent_archives'])
+        self.assertEqual(snapshots,{str(p):p.read_bytes() for p in self.work.rglob('*') if p.is_file()})
+
+    def test_wrong_hash_or_missing_selected_directory_never_adopts_another_copy(self):
+        record=self.archive('a')
+        for selected in (dict(record,ledger_sha256='0'*64),
+                         dict(record,directory=str(self.work/'nonrtric-kong-lb-blocker-missing'))):
+            with self.assertRaisesRegex(ValueError,'identity or hash'):self.select(selected)
+
+    def test_outside_path_relative_path_wrong_prefix_and_symlink_are_refused(self):
+        record=self.archive('a');link=self.work/'nonrtric-kong-lb-blocker-link'
+        link.symlink_to(Path(record['directory']),target_is_directory=True)
+        for directory in ('relative','/outside/nonrtric-kong-lb-blocker-a',str(self.work/'other'),str(link)):
+            with self.assertRaisesRegex(ValueError,'outside'):self.select(dict(record,directory=directory))
+
+    def test_matching_but_nonidentical_preserved_contents_are_refused(self):
+        selected=self.archive('a');self.archive('z',extra=True)
+        with self.assertRaisesRegex(ValueError,'conflicting contents'):self.select(selected)
+
+    def test_tampered_equivalent_archive_is_not_ignored(self):
+        selected=self.archive('a');other=self.archive('z')
+        gate.write(Path(other['directory'])/'unrecorded.json',{})
+        with self.assertRaisesRegex(ValueError,'archive changed'):self.select(selected)
+
+    def test_selected_archive_must_match_retained_service_and_release(self):
+        selected=self.archive('a')
+        for svc,release in ((converted(),self.release),(service(),{'revision':3,'status':'failed'})):
+            with self.assertRaisesRegex(ValueError,'identity or hash'):
+                gate.blocker_archive(self.path,svc,release,selected)
+
+    def test_verification_rechecks_all_bound_copies(self):
+        selected=self.archive('a');other=self.archive('z');result=self.select(selected)
+        gate.write(Path(other['directory'])/'unrecorded.json',{})
+        with self.assertRaisesRegex(ValueError,'archive changed'):gate.verify_blocker_archive(result)
+
+    def test_copy_binding_cannot_drop_selection_duplicate_paths_or_change_hash(self):
+        selected=self.archive('a');self.archive('z');result=self.select(selected)
+        for what in ('empty','selected','duplicate','hash'):
+            bad=copy.deepcopy(result)
+            if what=='empty':bad['equivalent_archives']=[]
+            elif what=='selected':bad['directory']=str(self.work/'nonrtric-kong-lb-blocker-missing')
+            elif what=='duplicate':bad['equivalent_archives'].append(bad['equivalent_archives'][0])
+            else:bad['equivalent_archives'][1]['ledger_sha256']='0'*64
+            with self.assertRaisesRegex(ValueError,'binding changed'):gate.verify_blocker_archive(bad)
 
 
 if __name__=='__main__':unittest.main()

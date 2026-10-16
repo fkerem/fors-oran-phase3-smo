@@ -234,9 +234,14 @@ DMAAP acceptance; `26480b1` for O-RU acceptance):
 python3 tools/phase3-kong-proxy.py audit --expected-slice "$slice" \
   --accepted-dmaap-checkout /var/tmp/ACCEPTED-F952CE5-CHECKOUT \
   --accepted-oru-checkout /var/tmp/ACCEPTED-26480B1-CHECKOUT \
+  --blocker-archive /local/setup/phase3-smo/nonrtric-kong-lb-blocker-REVIEWED \
+  --blocker-archive-sha256 REVIEWED_64_CHARACTER_LEDGER_SHA256 \
   --review-file /local/setup/phase3-smo/fresh-start/UNIQUE-kong-proxy-review.json
 # Review the preserved blocker, exact one-field manifest delta and dry-run.
-# Use the same arguments with action apply for the single guarded transition.
+python3 tools/phase3-kong-proxy.py apply --expected-slice "$slice" \
+  --accepted-dmaap-checkout /var/tmp/ACCEPTED-F952CE5-CHECKOUT \
+  --accepted-oru-checkout /var/tmp/ACCEPTED-26480B1-CHECKOUT \
+  --review-file /local/setup/phase3-smo/fresh-start/UNIQUE-kong-proxy-review.json
 python3 tools/phase3-kong-proxy.py continue --expected-slice "$slice" \
   --accepted-dmaap-checkout /var/tmp/ACCEPTED-F952CE5-CHECKOUT \
   --accepted-oru-checkout /var/tmp/ACCEPTED-26480B1-CHECKOUT
@@ -244,7 +249,15 @@ python3 tools/phase3-kong-proxy.py continue --expected-slice "$slice" \
 
 Audit creates a separate hashed ClusterIP override, leaving original values,
 charts, contexts, receipts and failed latches untouched. Reviews expire after
-30 minutes. Apply retains a durable intent latch and sends one type-only JSON
+30 minutes. Select the previously reviewed blocker directory and ledger hash
+explicitly; audit never chooses the first glob result. Byte-identical copies
+are preserved, independently verified and bound into the review. Conflicting
+matching contents, a wrong path/hash, tampering or a changed copy set block
+apply; later verification rechecks every bound copy. Do not delete evidence to
+make a cardinality check pass. Archive-selection flags are audit-only; apply
+uses the selection already bound into its review.
+
+Apply retains a durable intent latch and sends one type-only JSON
 Patch with Service UID/resourceVersion/type preconditions. Kubernetes clears
 LoadBalancer-only allocations; any additional change is refused. It then runs
 one no-hook Helm reconciliation using the original artifacts plus the separate

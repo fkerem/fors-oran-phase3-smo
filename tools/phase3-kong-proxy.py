@@ -93,9 +93,19 @@ def render(gate,path,override):
     return list(yaml.safe_load_all(p.stdout))
 
 
-def blocker_archive(path,svc,release):
+def blocker_archive(path,svc,release,selection):
+    if (not isinstance(selection,dict) or set(selection)!={'directory','ledger_sha256'}
+            or not isinstance(selection['directory'],str)
+            or not isinstance(selection['ledger_sha256'],str)
+            or len(selection['ledger_sha256'])!=64
+            or any(c not in '0123456789abcdef' for c in selection['ledger_sha256'])):
+        raise policy.Blocked('Explicit preserved Kong archive path and SHA-256 required')
+    selected=Path(selection['directory'])
+    if (not selected.is_absolute() or selected.parent!=path.parent.parent
+            or not selected.name.startswith('nonrtric-kong-lb-blocker-') or selected.is_symlink()):
+        raise policy.Blocked('Selected Kong archive is outside the preserved evidence directory')
     records=[]
-    for directory in path.parent.parent.glob('nonrtric-kong-lb-blocker-*'):
+    for directory in sorted(path.parent.parent.glob('nonrtric-kong-lb-blocker-*')):
         record={'directory':str(directory),'ledger_sha256':digest(directory/'SHA256SUMS.json')}
         util.verify_archive(record)
         saved=read(directory/'kong-service.json');status=read(directory/'helm-status.json')
@@ -108,8 +118,23 @@ def blocker_archive(path,svc,release):
                 raise policy.Blocked('Expected preserved Kong readiness timeout unavailable')
             if digest(path.parent.parent/logs[0].name)!=digest(logs[0]):raise policy.Blocked('Original Helm blocker log changed')
             records.append(record)
-    if len(records)!=1:raise policy.Blocked('Preserved Kong blocker archive is missing or ambiguous')
-    return records[0]
+    if selection not in records:raise policy.Blocked('Selected Kong archive identity or hash does not match')
+    if any(r['ledger_sha256']!=selection['ledger_sha256'] for r in records):
+        raise policy.Blocked('Matching Kong blocker archives have conflicting contents')
+    result=dict(selection,equivalent_archives=records)
+    verify_blocker_archive(result)
+    return result
+
+
+def verify_blocker_archive(record):
+    selected={k:record[k] for k in ('directory','ledger_sha256')}
+    copies=record.get('equivalent_archives',[])
+    if (not copies or any(not isinstance(r,dict) or set(r)!=set(selected) for r in copies)
+            or len({r['directory'] for r in copies})!=len(copies)
+            or copies.count(selected)!=1
+            or any(r['ledger_sha256']!=selected['ledger_sha256'] for r in copies)):
+        raise policy.Blocked('Reviewed Kong archive selection or equivalent-copy binding changed')
+    for copy in copies:util.verify_archive(copy)
 
 
 def code_binding():
@@ -124,7 +149,7 @@ def server_dry_run(svc):
     return identity
 
 
-def audit_binding(old,gate,path,slice_urn,override):
+def audit_binding(old,gate,path,slice_urn,override,selection):
     baseline=historical(old,gate,path,slice_urn)
     if any((path.parent.parent.parent/n).exists() for n in ('setup-oran-smo-done','setup-driver-done')):
         raise policy.Blocked('Completed setup requires a separate review')
@@ -148,7 +173,7 @@ def audit_binding(old,gate,path,slice_urn,override):
     return {'schema':1,'slice_urn':slice_urn,'historical':baseline,'release':release,
         'service':svc,'runtime':current,'server_dry_run_verified':True,
         'override':{'path':str(override.resolve()),'sha256':digest(override)},
-        'blocker_archive':blocker_archive(path,svc,release),'code_sha256':code_binding()}
+        'blocker_archive':blocker_archive(path,svc,release,selection),'code_sha256':code_binding()}
 
 
 def preserve(path,label):
@@ -184,11 +209,11 @@ def helm_logged(path,label,args,gate):
     if code:raise policy.Blocked('Normal '+label+' gate failed; private logs preserved')
 
 
-def review(path,review_path,old,gate,slice_urn):
+def review(path,review_path,old,gate,slice_urn,selection=None):
     override=review_path.with_suffix('.clusterip.json')
     if review_path.exists() or override.exists():raise policy.Blocked('Review path already used; no overwrite')
     write(override,policy.OVERRIDE)
-    binding=audit_binding(old,gate,path,slice_urn,override)
+    binding=audit_binding(old,gate,path,slice_urn,override,selection)
     write(review_path,{'schema':1,'created_utc':datetime.now(timezone.utc).isoformat(),'binding':binding})
 
 
@@ -198,7 +223,8 @@ def apply(path,review_path,old,gate,slice_urn):
     latch=path.parent/(PREFIX+'attempt.json')
     if latch.exists() or (path.parent/(PREFIX+'acceptance.json')).exists():raise policy.Blocked('Kong attempt already exists; no replay')
     binding=approved['binding'];override=Path(binding['override']['path'])
-    if audit_binding(old,gate,path,slice_urn,override)!=binding:raise policy.Blocked('Reviewed Kong recovery binding changed')
+    selection={k:binding['blocker_archive'][k] for k in ('directory','ledger_sha256')}
+    if audit_binding(old,gate,path,slice_urn,override,selection)!=binding:raise policy.Blocked('Reviewed Kong recovery binding changed')
     archive=preserve(path,'before');latest=service()
     if latest!=binding['service']:raise policy.Blocked('Kong Service changed immediately before transition')
     write(latch,{'schema':1,'review_file':str(review_path.resolve()),'review_sha256':digest(review_path),
@@ -240,7 +266,7 @@ def verify(path,old,gate,slice_urn):
             or digest(path.parent/(PREFIX+'service-transition.json'))!=receipt['transition_sha256']
             or latch['binding_sha256']!=policy.sha(binding) or latch['review_sha256']!=digest(review_path)
             or binding['code_sha256']!=code_binding()):raise policy.Blocked('Kong acceptance binding changed')
-    util.verify_archive(receipt['private_archive']);util.verify_archive(latch['private_archive']);util.verify_archive(binding['blocker_archive'])
+    util.verify_archive(receipt['private_archive']);util.verify_archive(latch['private_archive']);verify_blocker_archive(binding['blocker_archive'])
     if digest(Path(binding['override']['path']))!=binding['override']['sha256']:
         raise policy.Blocked('Reviewed ClusterIP override changed')
     if historical(old,gate,path,slice_urn)!=binding['historical']:raise policy.Blocked('Historical acceptance changed')
@@ -352,11 +378,19 @@ def main():
     parser.add_argument('--expected-slice',required=True);parser.add_argument('--context',type=Path,default=CONTEXT)
     parser.add_argument('--review-file',type=Path);parser.add_argument('--accepted-dmaap-checkout',type=Path)
     parser.add_argument('--accepted-oru-checkout',type=Path);parser.add_argument('--bind-identity',action='store_true')
+    parser.add_argument('--blocker-archive',type=Path);parser.add_argument('--blocker-archive-sha256')
     args=parser.parse_args();os.umask(0o077)
     def cancelled(signum,frame):raise KeyboardInterrupt('Owned Kong recovery cancelled')
     signal.signal(signal.SIGTERM,cancelled)
     try:
         if args.bind_identity and args.action!='verify-fresh':raise policy.Blocked('Fresh identity flag requires verify-fresh')
+        selection=None
+        if args.action=='audit':
+            if not args.blocker_archive or not args.blocker_archive_sha256:
+                raise policy.Blocked('Audit requires the reviewed blocker archive path and SHA-256')
+            selection={'directory':str(args.blocker_archive),'ledger_sha256':args.blocker_archive_sha256}
+        elif args.blocker_archive or args.blocker_archive_sha256:
+            raise policy.Blocked('Archive selection is audit-only; apply uses the recorded review')
         fresh=args.action=='verify-fresh'
         if fresh:
             gate=util.accepted_checkout(ROOT,fresh=True);old=None
@@ -367,7 +401,7 @@ def main():
         with lock:
             if args.action in ('audit','apply'):
                 if not args.review_file:raise policy.Blocked('Separate private review path required')
-                if args.action=='audit':review(args.context,args.review_file,old,gate,args.expected_slice)
+                if args.action=='audit':review(args.context,args.review_file,old,gate,args.expected_slice,selection)
                 else:apply(args.context,args.review_file,old,gate,args.expected_slice)
             elif args.action=='verify':verify(args.context,old,gate,args.expected_slice)
             elif args.action=='continue':continue_startup(args.context,old,gate,args.expected_slice)
