@@ -39,7 +39,7 @@ def qualify(blob):
             return Object(metadata=Object(generation=1),spec=Object(replicas=1),status=Object(
                 unavailable_replicas=None,updated_replicas=1,replicas=1,ready_replicas=1,observed_generation=1))
     kubernetes=ModuleType('kubernetes');client=ModuleType('kubernetes.client');rest=ModuleType('kubernetes.client.rest')
-    client.Configuration=lambda:Object();client.ApiClient=lambda value:value
+    client.Configuration=lambda:Object(api_key={},api_key_prefix={});client.ApiClient=lambda value:value
     client.CoreV1Api=lambda value:Core();client.AppsV1Api=lambda value:Apps();client.BatchV1Api=lambda value:Object()
     client.rest=rest;rest.ApiException=ApiException;kubernetes.client=client
     with tempfile.TemporaryDirectory(prefix='oru-synthetic-') as directory:

@@ -36,3 +36,4 @@ jobs:
         run: |
           /usr/bin/python3 -c 'import cryptography; from cryptography.hazmat.backends.openssl.backend import backend; assert cryptography.__version__ == "3.4.8"; assert backend.openssl_version_text().startswith("OpenSSL 3.")'
           /usr/bin/python3 bin/phase3-fresh-start.py rehearse --directory "$RUNNER_TEMP/phase3-bootstrap"
+      - run: /usr/bin/python3 tools/qualify-oru-readiness.py --output "$RUNNER_TEMP/oru-readiness-qualification.json"

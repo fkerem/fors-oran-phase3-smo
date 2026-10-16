@@ -188,5 +188,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('elif bind_identity:write(identity,expected)',source)
         self.assertIn('identity acceptance missing',source)
 
+    def test_partial_or_lost_create_response_keeps_latch_and_never_accepts(self):
+        binding={'readiness_history':[],'proposed_rbac':policy.resources(targets())}
+        gate.write(self.review,{'schema':1,'created_utc':datetime.now(timezone.utc).isoformat(),'binding':binding})
+        with patch.object(gate,'review_binding',return_value=copy.deepcopy(binding)), \
+             patch.object(gate,'preserve',return_value={'synthetic':True}),patch.object(gate,'oru_pod',return_value=pod()), \
+             patch.object(gate,'command',side_effect=TimeoutError('lost response')) as create:
+            with self.assertRaises(TimeoutError):gate.apply(None,self.path,'slice',self.review,False)
+            create.assert_called_once()
+        self.assertTrue((self.path.parent/(gate.PREFIX+'attempt.json')).exists())
+        self.assertFalse((self.path.parent/(gate.PREFIX+'acceptance.json')).exists())
+
+    def test_qualification_unknown_source_refused_before_execution(self):
+        spec=importlib.util.spec_from_file_location('oru_qualifier_test',ROOT/'tools/qualify-oru-readiness.py')
+        q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
+        with self.assertRaisesRegex(ValueError,'Unknown readiness'):q.qualify(b'unknown code')
+
+    def test_fresh_gate_never_adopts_preexisting_rbac(self):
+        gate.write(self.path.parent/'onap-acceptance.json',{})
+        with patch.object(gate,'read',return_value={'oru_readiness_contract':1}), \
+             patch.object(gate,'protected',return_value={}),patch.object(gate,'targets',return_value=targets()), \
+             patch.object(gate,'get',side_effect=[{'items':[]},{'existing':True}]),patch.object(gate,'command') as create:
+            with self.assertRaisesRegex(ValueError,'collision'):gate.fresh(None,self.path,'slice')
+            create.assert_not_called()
+
+    def test_duplicate_retained_continuation_is_not_retried(self):
+        gate.write(self.path.parent/(gate.PREFIX+'continuation-attempt.json'),{})
+        with patch.object(gate,'verify',return_value={}),patch.object(gate,'helm_logged') as helm:
+            with self.assertRaisesRegex(ValueError,'already attempted'):gate.continue_startup(None,self.path,'slice')
+            helm.assert_not_called()
+
 
 if __name__=='__main__':unittest.main()
