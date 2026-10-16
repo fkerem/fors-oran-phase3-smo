@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Collect metadata and readiness without reading Kubernetes Secret contents."""
+"""Collect readiness metadata and verify current preload acceptance privately."""
 import argparse
 from datetime import datetime, timezone
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -58,7 +59,7 @@ def assess(nodes, workloads, pods, pvcs, releases, services, kafkas=(), jobs=Non
                 errors.append('Job is not Complete: %s/%s' % (job['namespace'],job['name']))
     return errors
 
-def collect():
+def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
     raw_nodes = json.loads(command(["kubectl", "get", "nodes", "-o", "json"]))["items"]
     nodes = [{"name": n["metadata"]["name"],
               "ready": any(c["type"] == "Ready" and c["status"] == "True" for c in n.get("status", {}).get("conditions", [])),
@@ -110,6 +111,30 @@ def collect():
         gate = record.parent / "operator-gate.json"
         entry["gate"] = json.loads(gate.read_text()) if gate.exists() else {"ready": False}
         operator_compatibility.append(entry)
+    errors = assess(nodes, workloads, pods, pvcs, releases, services, kafkas, jobs)
+    preload_verified = False
+    preload_current = None
+    try:
+        if Path(context_path).is_file():
+            context = json.loads(Path(context_path).read_text())
+            if 'sms_preload_contract' in context:
+                spec = importlib.util.spec_from_file_location('provenance_sms_preload', ROOT/'bin/phase3-sms-preload.py')
+                gate = importlib.util.module_from_spec(spec); spec.loader.exec_module(gate)
+                if gate.verify_acceptance(context_path) is None:
+                    raise ValueError('Qualified fresh preload acceptance missing')
+                preload_verified = True
+                preload_current = {'verified': True}
+    except (OSError, ValueError, RuntimeError, KeyError):
+        preload_current = {'verified': False}
+        errors.append('SMS preload current verification is not established')
+    onap = [r for r in raw_workloads+raw_jobs if r['metadata'].get('namespace') == 'onap']
+    if any(r['kind'] == 'Job' and r['metadata']['name'] == 'onap-aaf-sms-preload' for r in onap):
+        spec = importlib.util.spec_from_file_location('provenance_fresh', ROOT/'bin/phase3-fresh-start.py')
+        fresh = importlib.util.module_from_spec(spec); spec.loader.exec_module(fresh)
+        try:
+            errors.extend(fresh.onap_errors(onap, preload_verified=preload_verified))
+        except (ValueError, RuntimeError, KeyError):
+            errors.append('SMS preload/ONAP Job acceptance is not established')
     return {"collected_utc": datetime.now(timezone.utc).isoformat(),
             "profile_commit": command(["git", "-C", str(ROOT), "rev-parse", "HEAD"]).strip(),
             "kubernetes": json.loads(command(["kubectl", "version", "-o", "json"])),
@@ -117,8 +142,9 @@ def collect():
             "nodes": nodes, "workloads": workloads, "pods": pods, "pvcs": pvcs,
             "helm_releases": releases, "services": services,
             "kafkas": kafkas, "jobs": jobs, "operator_compatibility": operator_compatibility,
+            "sms_preload_current": preload_current,
             "source_dependencies": dependencies, "chart_compatibility": compatibility,
-            "readiness_errors": assess(nodes, workloads, pods, pvcs, releases, services, kafkas, jobs)}
+            "readiness_errors": errors}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

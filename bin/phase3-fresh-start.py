@@ -2,6 +2,7 @@
 """Prepare a new allocation, or rehearse privately without contacting Kubernetes."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -74,7 +75,6 @@ def offline_rehearsal(directory, experiment):
         raise ValueError('AAF image bootstrap source needs review; actual SHA256='+source_digest)
     source = run(docker_prefix()+['run','--rm','--network','none','--entrypoint','/bin/cat',
         READINESS_IMAGE,'/app/ready.py'],directory=directory)
-    import importlib.util
     spec = importlib.util.spec_from_file_location('readiness_wrapper',ROOT/'bin/phase3-readiness-wrapper.py')
     wrapper = importlib.util.module_from_spec(spec); spec.loader.exec_module(wrapper)
     wrapper.patched_source(source)
@@ -88,6 +88,9 @@ def offline_rehearsal(directory, experiment):
     backend_spec = importlib.util.spec_from_file_location('sms_backend_rehearsal', ROOT/'bin/phase3-sms-backend-rehearsal.py')
     backend_rehearsal = importlib.util.module_from_spec(backend_spec); backend_spec.loader.exec_module(backend_rehearsal)
     backend_result = backend_rehearsal.check(directory/'sms-backend-isolated', docker_prefix())
+    preload_spec = importlib.util.spec_from_file_location('sms_preload_rehearsal', ROOT/'bin/phase3-sms-preload-rehearsal.py')
+    preload_rehearsal = importlib.util.module_from_spec(preload_spec); preload_spec.loader.exec_module(preload_rehearsal)
+    preload_result = preload_rehearsal.check(directory/'sms-preload-isolated', docker_prefix())
     run(docker_prefix()+['run','--rm','--network','none',
         '--mount','type=bind,src='+str(pki)+',dst=/phase3-pki,readonly',
         '--mount','type=bind,src='+str(ROOT/'tools/Phase3PkiTlsProbe.java')+',dst=/checks/Phase3PkiTlsProbe.java,readonly',
@@ -121,6 +124,7 @@ def offline_rehearsal(directory, experiment):
               'ves_rehearsal':ves_result,
               'sms_rehearsal':sms_result,
               'sms_backend_rehearsal':backend_result,
+              'sms_preload_rehearsal':preload_result,
               'full_smo_tested':False,'network_during_bootstrap':'none'}
     private_write(directory/'rehearsal.json',(json.dumps(record,indent=2)+'\n').encode())
     return record
@@ -176,7 +180,7 @@ def prepare(directory, slice_urn):
     context = {'schema':1,'baseline':'fresh-isolated-lab-pki','slice_urn':slice_urn,'node_uids':current,
                'storage_node':storage,'pki_directory':str(pki),'root_sha256':record['root_sha256'],
                'secret_name':'phase3-lab-pki-'+record['root_sha256'][:16],
-               'storage_preflight':storage_check,'sms_backend_contract':1,
+               'storage_preflight':storage_check,'sms_backend_contract':1,'sms_preload_contract':1,
                'rehearsal_sha256':hashlib.sha256((directory/'rehearsal.json').read_bytes()).hexdigest()}
     for namespace in ('onap','nonrtric','network'):
         existing = kubectl('get','namespace',namespace,'--ignore-not-found','-o','name').strip()
@@ -189,6 +193,11 @@ def prepare(directory, slice_urn):
     kubectl('create','-f','-',data=json.dumps(phase3_ves.config(context)).encode())
     kubectl('create','-f','-',data=json.dumps(phase3_sms.config(context)).encode())
     kubectl('create','-f','-',data=json.dumps(phase3_sms_backend.config(context)).encode())
+    import phase3_preload
+    if phase3_preload.CONTRACT != 1:
+        raise ValueError('Unreviewed SMS preload contract')
+    for resource in [phase3_preload.helper_config(), *phase3_preload.resources(context)]:
+        kubectl('create','-f','-',data=json.dumps(resource).encode())
     context['files_sha256'] = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pki.iterdir() if p.is_file()}
     private_write(directory/'context.json',(json.dumps(context,indent=2)+'\n').encode())
     return context
@@ -198,6 +207,9 @@ def verify_context(path, require_empty=False):
     context = json.loads(Path(path).read_text())
     if context.get('schema')!=1 or context.get('baseline')!='fresh-isolated-lab-pki':
         raise ValueError('Unreviewed fresh-install context')
+    if 'sms_preload_contract' in context and (
+            type(context['sms_preload_contract']) is not int or context['sms_preload_contract'] != 1):
+        raise ValueError('Unreviewed SMS preload contract')
     actual_slice = run(['geni-get','slice_urn']).decode().strip()
     if actual_slice != context['slice_urn']:
         raise ValueError('Allocation slice changed')
@@ -229,10 +241,20 @@ def verify_context(path, require_empty=False):
         actual=json.loads(kubectl('get','configmap',expected['metadata']['name'],'-n','onap','-o','json'))
         if actual.get('immutable') is not True or actual.get('data')!=expected['data']:
             raise ValueError('Immutable quorum trust helper changed')
+    if context.get('sms_preload_contract') == 1:
+        import phase3_preload
+        if phase3_preload.CONTRACT != 1 or context.get('sms_backend_contract') != 1:
+            raise ValueError('Unreviewed SMS preload/backend contract')
+        receipt=json.loads((directory/'rehearsal.json').read_text()).get('sms_preload_rehearsal',{})
+        phase3_preload.require_qualification(receipt)
+        expected=phase3_preload.helper_config()
+        actual=json.loads(kubectl('get','configmap',expected['metadata']['name'],'-n','onap','-o','json'))
+        if actual.get('immutable') is not True or actual.get('data')!=expected['data']:
+            raise ValueError('Immutable SMS preload helper changed')
     return context
 
 
-def onap_errors(resources):
+def onap_errors(resources, preload_verified=False):
     errors=[]
     kinds={r['kind'] for r in resources}
     if not {'Deployment','StatefulSet','Job'}.issubset(kinds):
@@ -240,10 +262,18 @@ def onap_errors(resources):
     for r in resources:
         spec=r.get('spec',{}); status=r.get('status',{}); kind=r['kind']; name=r['metadata']['name']
         if kind=='Job':
-            if name == phase3_sms.JOB and spec.get('suspend') is True:
-                raise ValueError('SMS preload is safely held: explicit write-safety review is required; do not unsuspend stock preload')
-            if name == phase3_sms.JOB and r['metadata'].get('annotations', {}).get('phase3.onap.org/preload-gate'):
-                raise ValueError('SMS preload write-safety acceptance is unavailable; manual unsuspension is not acceptance')
+            if name == phase3_sms.JOB:
+                if spec.get('suspend') is True:
+                    raise ValueError('SMS preload is safely held: explicit write-safety review is required; do not unsuspend stock preload')
+                if (not preload_verified or r['metadata'].get('annotations', {}).get('phase3.onap.org/preload-gate')
+                        == 'explicit-write-safety-review-required'):
+                    raise ValueError('SMS preload write-safety acceptance is unavailable; manual unsuspension is not acceptance')
+                import phase3_preload
+                pod=spec.get('template',{}).get('spec',{})
+                clients=pod.get('containers',[])
+                if (spec.get('backoffLimit') != 0 or pod.get('restartPolicy') != 'Never'
+                        or len(clients) != 1 or not phase3_preload.is_client(clients[0])):
+                    raise ValueError('SMS preload Job is not the exact reviewed guarded client')
             conditions=status.get('conditions',[])
             if any(c['type']=='Failed' and c['status']=='True' for c in conditions):
                 raise ValueError('ONAP Job failed; no automatic retry: '+name)
@@ -262,16 +292,20 @@ def wait_onap(path, timeout):
     backend_spec=importlib.util.spec_from_file_location('backend_acceptance',ROOT/'bin/phase3-sms-backend.py')
     backend_gate=importlib.util.module_from_spec(backend_spec); backend_spec.loader.exec_module(backend_gate)
     backend_gate.verify_acceptance(path)
+    preload_spec=importlib.util.spec_from_file_location('preload_acceptance',ROOT/'bin/phase3-sms-preload.py')
+    preload_gate=importlib.util.module_from_spec(preload_spec); preload_spec.loader.exec_module(preload_gate)
+    preload_verified=preload_gate.verify_acceptance(path) is not None
     deadline=time.monotonic()+timeout
     while True:
         resources=json.loads(kubectl('get','deployments,statefulsets,jobs','-n','onap','-o','json'))['items']
-        errors=onap_errors(resources)
+        errors=onap_errors(resources, preload_verified=preload_verified)
         if not errors:
             break
         if time.monotonic()>=deadline:
             raise ValueError('ONAP acceptance timeout; first unmet gate: '+errors[0])
         print('ONAP prerequisite gate: %d pending'%len(errors),flush=True)
         time.sleep(20)
+        preload_verified=preload_gate.verify_acceptance(path) is not None
     service=json.loads(kubectl('get','service','aaf-locate','-n','onap','-o','json'))
     tls=ssl.create_default_context(cafile=str(Path(context['pki_directory'])/'root.cer'))
     with socket.create_connection((service['spec']['clusterIP'],8095),timeout=20) as sock:
@@ -302,6 +336,7 @@ def wait_onap(path, timeout):
     if not agents:
         raise ValueError('No actual successful AAF retrieval initializer was observed')
     verify_context(path)
+    preload_gate.verify_acceptance(path)
     result={'schema':1,'passed':True,'slice_urn':context['slice_urn'],'root_sha256':context['root_sha256'],
             'server_leaf_sha256':leaf_sha,'hostname_verified':'aaf-locate.onap','successful_agent_initializers':agents,
             'successful_ves_initializers':ves,

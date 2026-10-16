@@ -87,9 +87,9 @@ The later PyNTS certificate experiment is a separate, explicitly launched
 runtime; NTS readiness does not validate that notifier.
 New experiments use an experiment-local lab PKI and a source-verified Job
 readiness compatibility wrapper; this is not the unmodified stock PKI.
-SMS public-chain/routing compatibility is included, but its stock preload
-is deliberately held pending explicit write-safety review. This revision
-does not yet provide unattended full-SMO acceptance.
+SMS public-chain/routing compatibility is included. New fresh contexts use
+a qualified guarded preload client after backend acceptance; retained contexts
+keep the stock preload safety hold. Full SMO readiness is checked separately.
 Fresh quorum clients use the allocation's public root before first startup;
 backend acceptance additionally requires durable shard and AppRole custody.
 """)
@@ -116,11 +116,13 @@ For a predeployment rehearsal failure, use only the reviewed recovery in
 README.md; do not replay infrastructure setup or delete generated PKI.
 Kubernetes credentials are in `~/.kube/config`.
 
-The SMS preload safety hold requires review, not more waiting: do not
-manually unsuspend it or retry the stock writer. Follow the SMS safety
-gate in README.md. A held Job or Job Complete alone is not acceptance.
-The intentional hold stops setup before full completion; do not force a
-Finished/completion marker or replay setup to clear it.
+New contexts automatically gate the first guarded SMS preload attempt after
+backend acceptance. Existing/partial state or an uncertain attempt stops setup:
+there are no write retries or overwrite. Retained contexts keep their safety
+hold; do not manually unsuspend a Job or replay the old allocation. Follow
+the fresh-only SMS preload gate in README.md. Job Complete alone is not
+acceptance; do not force a Finished/completion marker. After publication,
+use the refreshed revision for a separate new experiment.
 
 For local SMO UI access, use an SSH tunnel and loopback Kubernetes port
 forward as documented in README.md. Read chart-provided credentials only on

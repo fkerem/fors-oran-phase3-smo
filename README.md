@@ -51,11 +51,10 @@ rejection. It uses synthetic material and disposable storage, no live API and
 no published ports. Fixture ownership is not a live filesystem-permissions
 equivalence claim, and these tests do not prove a complete new deployment.
 
-**A backend pass still leaves the stock preload held.** The separately reviewed
-guarded preload client is not implemented by this backend fix; full SMO and
-certificate testing remain gated as described below.
+Backend acceptance is a prerequisite for the separate guarded preload gate
+below. It alone grants no application-write or full SMO acceptance.
 
-## SMS safety gate (current stopping point)
+## Fresh-only automatic SMS preload gate
 
 New profiles repair SMS's served public chain using this allocation's existing
 root and intermediate. A crypto-only, digest-pinned initializer validates the
@@ -66,19 +65,42 @@ digest-pinned. A server-only role label narrows `aaf-sms` so preload Pods can
 never become its TCP/10443 endpoints. The immutable Deployment selector,
 databases, PVCs and packaged historical certificate Secret are not changed.
 
-**SMS preload is deliberately suspended on new installs. Full SMO startup is
-not yet unattended.** The pinned preload binary retries writes, can exit zero
+New contexts carry `sms_preload_contract: 1`. Preparation qualifies the guarded
+client offline and creates its immutable code ConfigMap and scoped ServiceAccount,
+Role and RoleBinding after the namespace exists. The fresh renderer replaces
+only the reviewed preload Job with the guarded client, initially suspended.
+Immediately after backend acceptance, setup runs
+`python3 bin/phase3-sms-preload.py run-fresh --context PATH --timeout 600`
+under the inherited driver lock (fd 9). This gate controls the first attempt;
+it is not a recovery or replay command.
+
+The reviewed inputs contain six `has` secrets and fourteen `osdf` secrets:
+two domain POSTs plus twenty secret POSTs, at most **22 POST attempts** total.
+The VFC spelling typo is corrected; the two `pciHMS` empty string literals
+are retained exactly. Every target must be absent before writing. There are
+no POST retries, no overwrite and no missing-only reconciliation. Existing,
+partial or uncertain state aborts the attempt for review. A durable allocation
+attempt latch and a ConfigMap journal prevent ordinary driver/Pod restart from
+replaying it. This is controlled single-writer operation, not protection
+against a hostile concurrent writer racing the absence checks.
+
+The gate requires current backend/TLS/input/Job identity checks and private
+postcondition comparison before publishing `sms-preload-acceptance.json`.
+ONAP waiting, continuation, status and provenance reverify current preload
+acceptance; neither Job Complete nor annotations alone establish success.
+Full SMO readiness and certificate testing retain their separate later gates.
+
+Retained contexts without this contract keep their existing safety hold.
+The old allocation is not replayed or automatically upgraded. After publication,
+start a separate new experiment using the refreshed profile revision.
+Do not manually unsuspend a legacy Job or invoke the stock writer.
+The pinned stock preload binary retries writes, can exit zero
 after write failures, continues to secret writes after an `existing domain`
 response, and falls back to insecure TLS when its CA file cannot be read.
-A log-only kill wrapper is not a request-level interlock and is not accepted
-as safe cleanup/replay control. Do not manually unsuspend the stock Job or
-treat a Job Complete condition alone as application success. ONAP acceptance
-refuses this held gate (including a manually unsuspended/completed Job).
-This explicitly blocks DMAAP/remaining SMO continuation; no completion marker
-is written. A reviewed no-retry writer with explicit TLS, pre-existing-object
-refusal, durable attempt identity and private postcondition comparison is
-separate work requiring review. Existing/uncertain partial effects must stop
-for review, not missing-only reconciliation, overwrite or database reset.
+A log-only kill wrapper is not a request-level interlock. ONAP acceptance
+continues to refuse the retained hold, including a manually unsuspended or
+completed legacy Job. Existing or uncertain effects require a separate recovery
+review; never reset the database or force a completion marker.
 
 `python3 bin/phase3-sms-rehearsal.py --directory NEW_PRIVATE_DIRECTORY` runs
 the exact-image chain controls and characterizes the preload binary against
@@ -86,6 +108,9 @@ synthetic data. Two containers share only a `--network none` container's
 loopback; no ports are published and no live AAF/SMS request is sent. Both
 Python crypto stacks run these controls in CI and fresh preparation. A passing
 rehearsal explicitly records `live_preload_authorized: false`.
+`python3 bin/phase3-sms-preload-rehearsal.py --directory NEW_PRIVATE_DIRECTORY`
+qualifies the guarded client separately with synthetic inputs. Fresh preparation
+records this as `sms_preload_rehearsal` and verifies its qualification before use.
 
 For the existing held allocation only, `bin/phase3-sms-repair.py --audit` and
 `--apply` accept `--expected-slice`, `--rehearsal RESULT_JSON`, and
@@ -168,7 +193,8 @@ agent initializers. Only then may non-RT RIC and NTS installation continue.
 The final full-SMO provenance gate still controls the completion marker.
 
 The private receipts are under `/local/setup/phase3-smo/fresh-start/`:
-`rehearsal.json`, `context.json`, backend handoff/acceptance records and, after live ONAP acceptance,
+`rehearsal.json`, `context.json`, backend handoff/acceptance records, private
+preload attempt evidence and `sms-preload-acceptance.json`, and, after live ONAP acceptance,
 `onap-acceptance.json`. Do **not** upload that directory: it also holds keys,
 passwords and private bootstrap logs. `bin/phase3-status.sh` prints only a
 bounded receipt status, not the private payloads. A partially started install

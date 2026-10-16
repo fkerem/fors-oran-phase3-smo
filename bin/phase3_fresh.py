@@ -55,7 +55,15 @@ def add_volume(spec, volume):
 def overlay(resources, context):
     if context.get('schema') != 1 or context.get('baseline') != 'fresh-isolated-lab-pki':
         raise ValueError('Fresh install context is missing or unreviewed')
+    if 'sms_preload_contract' in context and (
+            type(context['sms_preload_contract']) is not int or context['sms_preload_contract'] != 1):
+        raise ValueError('Unreviewed SMS preload contract')
     resources = copy.deepcopy(resources)
+    preload = None
+    if context.get('sms_preload_contract') == 1:
+        import phase3_preload as preload
+        if preload.CONTRACT != 1:
+            raise ValueError('Unreviewed SMS preload contract')
     trust = trust_config(context['pki_directory'])
     for resource in resources:
         kind = resource.get('kind')
@@ -69,7 +77,7 @@ def overlay(resources, context):
         elif kind == 'Service' and name == phase3_sms.SERVICE:
             resource.update(phase3_sms.patch_service(resource))
         elif kind == 'Job' and name == phase3_sms.JOB:
-            resource.update(phase3_sms.hold_preload(resource))
+            resource.update(preload.patch_job(resource, context) if preload else phase3_sms.hold_preload(resource))
         if kind == 'Deployment' and name == phase3_ves.NAME:
             patched = phase3_ves.patch_deployment(resource, context)
             resource.clear()
@@ -83,6 +91,8 @@ def overlay(resources, context):
         if spec is not None:
             helper_name = helper_config(meta.get('namespace','onap'))['metadata']['name']
             for container in spec.get('initContainers',[])+spec.get('containers',[]):
+                if preload is not None and preload.is_client(container):
+                    continue  # The exact reviewed preload client owns its entry point.
                 image = container.get('image','')
                 if image == READINESS_IMAGE:
                     command = container.get('command',[])

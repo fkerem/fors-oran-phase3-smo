@@ -16,7 +16,7 @@ from phase3_lab_pki import certificate, name, private_write
 import phase3_sms_backend as backend
 
 
-def check(directory, docker):
+def check(directory, docker, callback=None):
     root = Path(directory).resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     created = []
@@ -201,6 +201,11 @@ elif kind=='seal':
                 entries.append({'files': {n:(folder/n).read_bytes() for n in ('id','pbkey','prkey','shard')}})
             custody = backend.recovery_checks(entries)
             if probe('seal') != (0, b'scoped\n'): raise ValueError('Backend role exceeded expected privileges')
+            # Optional isolated application qualification. Credentials and the
+            # network namespace remain in this private fixture; the callback is
+            # reached only after normal first-use AppRole persistence and probe.
+            if callback is not None:
+                callback(case, dict(names), command)
             # Restart the same isolated server/quorum processes with their exact
             # existing directories. Restart Vault to reseal, not a root API token.
             for role in ('sms','quorum-0','quorum-1','quorum-2','vault'):
@@ -233,6 +238,9 @@ elif kind=='seal':
                   'synthetic_material_only': True, 'live_api_contacted': False,
                   'fixture_user': 'operator UID; not a live filesystem-permissions equivalence claim',
                   'application_domain_or_secret_posts': 0, 'full_smo_tested': False}
+        if callback is not None:
+            result['optional_callback_invoked'] = True
+            result['application_domain_or_secret_posts_scope'] = 'backend probes only; callback receipt is separate'
         backend.require_qualification(result)
         private_write(root/'result.json', (json.dumps(result, indent=2)+'\n').encode())
         return result

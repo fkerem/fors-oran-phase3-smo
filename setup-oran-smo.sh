@@ -120,6 +120,7 @@ python3 "$SRC/bin/phase3-fresh-start.py" verify --context "$PHASE3_FRESH_CONTEXT
 helm -n onap deploy onap unpacked/onap --namespace onap --post-renderer "$renderer" \
     -f "$values/onap-override.yaml"
 PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/bin/phase3-sms-backend.py" wait-fresh --context "$PHASE3_FRESH_CONTEXT" --timeout 600
+PHASE3_RECOVERY_LOCK_FD=9 python3 "$SRC/bin/phase3-sms-preload.py" run-fresh --context "$PHASE3_FRESH_CONTEXT" --timeout 600
 test -n "$(kubectl -n onap get kafkas.kafka.strimzi.io -o name)" || {
     echo "ERROR: ONAP has not created its expected Kafka resource" >&2; exit 1;
 }

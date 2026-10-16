@@ -26,7 +26,7 @@ def acceptance_record(directory):
         raise ValueError('Latest operator record has not passed the one-hour memory gate')
     return record,data
 
-def check(directory='/local/setup/phase3-smo/compatibility'):
+def check(directory='/local/setup/phase3-smo/compatibility', context_path='/local/setup/phase3-smo/fresh-start/context.json'):
     def get(kind,namespace=None):
         args=['kubectl']+(['-n',namespace] if namespace else [])+['get',kind,'-o','json','--request-timeout=30s']
         return json.loads(run(args))
@@ -39,11 +39,18 @@ def check(directory='/local/setup/phase3-smo/compatibility'):
     runtime=compat.runtime_sample(sample['pod']);compat.kafka_sample()
     resources=get('deployments,statefulsets,jobs,pvc','onap')['items']
     releases=json.loads(run(['helm','list','--all','-n','onap','-o','json']))
+    preload_spec=importlib.util.spec_from_file_location('resume_sms_preload',ROOT/'phase3-sms-preload.py')
+    preload_gate=importlib.util.module_from_spec(preload_spec);preload_spec.loader.exec_module(preload_gate)
+    preload_verified=preload_gate.verify_acceptance(context_path) is not None
+    fresh_spec=importlib.util.spec_from_file_location('resume_fresh',ROOT/'phase3-fresh-start.py')
+    fresh=importlib.util.module_from_spec(fresh_spec);fresh_spec.loader.exec_module(fresh)
+    errors=fresh.onap_errors(resources, preload_verified=preload_verified)
+    if errors:raise ValueError('ONAP continuation refused: '+errors[0])
     def items(kind):return [r for r in resources if r['kind']==kind]
     onap_ready(get('nodes')['items'],items('Deployment'),items('StatefulSet'),items('Job'),items('PersistentVolumeClaim'),get('kafkas.kafka.strimzi.io','onap')['items'],releases)
     backend_spec=importlib.util.spec_from_file_location('resume_sms_backend',ROOT/'phase3-sms-backend.py')
     backend_gate=importlib.util.module_from_spec(backend_spec);backend_spec.loader.exec_module(backend_gate)
-    backend_gate.verify_acceptance('/local/setup/phase3-smo/fresh-start/context.json')
+    backend_gate.verify_acceptance(context_path)
     return {'ready':True,'operator':sample,'runtime':runtime,'operator_stability_seconds':gate['stability_seconds']}
 
 if __name__=='__main__':
