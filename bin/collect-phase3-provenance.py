@@ -6,6 +6,9 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from phase3_stateful_readiness import errors as stateful_errors
 
 ROOT = Path(__file__).resolve().parents[1]
 SMO_NAMESPACES = {"onap", "nonrtric", "network", "strimzi-system"}
@@ -112,6 +115,8 @@ def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
         entry["gate"] = json.loads(gate.read_text()) if gate.exists() else {"ready": False}
         operator_compatibility.append(entry)
     errors = assess(nodes, workloads, pods, pvcs, releases, services, kafkas, jobs)
+    stateful_readiness_errors = stateful_errors(raw_workloads, raw_pods, raw_kafkas)
+    errors.extend(stateful_readiness_errors)
     oru_current=None
     if Path(context_path).is_file() and json.loads(Path(context_path).read_text()).get('oru_readiness_contract')==1:
         result=subprocess.run(['python3',str(ROOT/'tools/phase3-oru-readiness.py'),'verify-fresh',
@@ -183,6 +188,7 @@ def collect(context_path='/local/setup/phase3-smo/fresh-start/context.json'):
             "oru_readiness_current":oru_current,
             "kong_proxy_current": kong_proxy_current,
             "source_dependencies": dependencies, "chart_compatibility": compatibility,
+            "statefulset_readiness": {"verified": not stateful_readiness_errors},
             "readiness_errors": errors}
 
 def main():

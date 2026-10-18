@@ -177,10 +177,8 @@ for ns in onap nonrtric network; do
     if [ -n "$deployments" ]; then
         kubectl -n "$ns" wait deployments --all --for=condition=Available --timeout=60m
     fi
-    while read -r resource; do
-        [ -z "$resource" ] || kubectl -n "$ns" rollout status "$resource" --timeout=60m
-    done < <(kubectl -n "$ns" get statefulsets -o name)
 done
+python3 "$SRC/bin/phase3_stateful_readiness.py" --timeout 3600
 # The ONAP plugin can swallow child Helm failures. Check release states too.
 python3 "$SRC/bin/collect-phase3-provenance.py" --output "$work/provenance.json" --require-ready
 logtend oran-smo

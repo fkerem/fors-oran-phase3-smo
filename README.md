@@ -646,6 +646,57 @@ An audit or selected-Job success does not attest to the full SMO baseline.
 Actual application, rehearsal and readiness outcomes must be taken from
 the allocated experiment's private receipts, not these local tests.
 
+### Strategy-aware final readiness and retained r4 continuation
+
+Automatic startup and provenance checks now distinguish StatefulSet update
+strategies. `RollingUpdate` keeps its normal read-only rollout-status check.
+The pinned Strimzi Kafka/ZooKeeper `OnDelete` sets instead require the one
+matching Kafka owner, reconciled generations, exact Ready Pod membership and
+matching controller/Pod revisions. No strategy change or Pod restart is made.
+The startup wait has a single bounded 3,600-second budget; unknown strategies,
+desired-state/identity drift and unproved convergence fail closed.
+
+The retained `p3-smo-cert-r4` allocation at profile `1d75faba` stopped only on
+the unsupported rollout-status command. It has a separate **final-only**
+continuation, not an ONAP/non-RT RIC/simulator deployment replay. Run the new
+published revision from its own clean checkout; retain `/local/repository`,
+its generated configuration and all existing acceptance evidence unchanged.
+
+Create a new owner-only review directory, then audit:
+
+```sh
+python3 -B bin/phase3-final-readiness.py --audit \
+  --expected-slice CURRENT_R4_SLICE_URN --accepted-checkout /local/repository \
+  --review-file NEW_PRIVATE_DIRECTORY/review.json
+```
+
+After reviewing the successful audit, from that same clean checkout:
+
+```sh
+./setup-driver.sh --resume-final-readiness \
+  --expected-slice CURRENT_R4_SLICE_URN --accepted-checkout /local/repository \
+  --review-file NEW_PRIVATE_DIRECTORY/review.json
+```
+
+This recovery is allocation-, original-log- and source-pin-specific. It requires
+the stopped startup, existing infrastructure markers, accepted operator hour,
+current SMS/backend/preload/DMAAP/O-RU/Kong checks, deployed releases, complete
+Jobs, Bound claims and independently validated full-SMO readiness. It binds
+resource identities/specs, restart counts, chart hashes and private receipts,
+and preserves both original logs privately before any continuation.
+Only the exact portal OID normalization in `test-common.py` is accepted as a
+tracked source difference; arbitrary edits or modes remain blocking.
+
+Apply holds the driver lock and records an allocation-wide exclusive attempt.
+It runs only the original provenance/end-stage checks and publishes completion
+markers after successful, unchanged final validation. An uncertain/failed
+attempt cannot be replayed. Keep the review and raw diagnostics private.
+No provisioning Job, Helm release, PKI, backend or application data is modified;
+existing authenticated checks can create/revoke scoped readback tokens.
+Certificate runtimes, fault cases, long observation and RF remain separately
+approved activities. This profile compatibility correction is not a finding
+of a default-deployment security vulnerability.
+
 ### Targeted fresh-baseline ONAP recovery
 
 Fresh installs now configure the stock VES TLS initializer with this

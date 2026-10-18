@@ -1,5 +1,17 @@
 #!/bin/bash
 SRC=$(cd -- "$(dirname -- "$0")" && pwd)
+# This branch must precede setup-lib and every normal deployment/resume stage.
+if [ "$1" = '--resume-final-readiness' ]; then
+    [ "$#" -eq 7 ] && [ "$2" = '--expected-slice' ] && [ -n "$3" ] && \
+        [ "$4" = '--accepted-checkout' ] && [ -n "$5" ] && \
+        [ "$6" = '--review-file' ] && [ -n "$7" ] || exit 2
+    umask 077
+    exec 9<>/local/setup/phase3-driver.lock
+    flock -n 9 || { echo 'Another startup/recovery holds the driver lock' >&2; exit 1; }
+    PHASE3_RECOVERY_LOCK_FD=9 python3 -B "$SRC/bin/phase3-final-readiness.py" --apply \
+        --expected-slice "$3" --accepted-checkout "$5" --review-file "$7"
+    exit $?
+fi
 resume_before_smo=0
 resume_after_onap=0
 resume_after_onap_deploy=0
