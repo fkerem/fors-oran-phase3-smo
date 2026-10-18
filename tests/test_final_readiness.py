@@ -117,7 +117,8 @@ class CheckoutTests(unittest.TestCase):
             with patch.object(checkout, 'command', side_effect=values), self.assertRaises(ValueError):checkout.verify(ROOT)
 
     def test_exact_portal_normalization_only(self):
-        original = subprocess.check_output(['git', '-C', str(ROOT), 'show', checkout.PROFILE_PIN+':test-common.py'])
+        # CI uses a shallow checkout; the fixture must not require parent history.
+        original = (ROOT/'test-common.py').read_bytes()
         normalized = original.replace(b'2.25.305821105408246119474742976030998643995',
                                       b'2.25.305821105.408246119.47474297.603099864.3995')
         with tempfile.TemporaryDirectory() as d:
